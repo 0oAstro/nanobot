@@ -472,7 +472,6 @@ class AgentLoop:
                 cfg = load_config()
                 subagent_model = self._subagent_default_for_model(model_arg)
                 cfg.agents.defaults.model = model_arg
-                cfg.agents.defaults.subagent_model = subagent_model
                 self._switch_model(model_arg)
                 self.subagent_model = subagent_model
                 self.subagents.model = subagent_model
