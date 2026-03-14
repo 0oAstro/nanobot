@@ -95,6 +95,8 @@ class HeartbeatConfig(Base):
 
     enabled: bool = True
     interval_s: int = 30 * 60  # 30 minutes
+    notify_channel: str | None = None
+    notify_to: str | None = None
 
 
 class GatewayConfig(Base):

@@ -7,6 +7,7 @@ import pytest
 from typer.testing import CliRunner
 
 from nanobot.cli.commands import app
+from nanobot.cli.commands import _resolve_heartbeat_notify_target, _resolve_heartbeat_target
 from nanobot.config.schema import Config
 from nanobot.providers.litellm_provider import LiteLLMProvider
 from nanobot.providers.openai_codex_provider import _strip_model_prefix
@@ -197,6 +198,55 @@ def test_litellm_provider_canonicalizes_github_copilot_hyphen_prefix():
 def test_openai_codex_strip_prefix_supports_hyphen_and_underscore():
     assert _strip_model_prefix("openai-codex/gpt-5.1-codex") == "gpt-5.1-codex"
     assert _strip_model_prefix("openai_codex/gpt-5.1-codex") == "gpt-5.1-codex"
+
+
+def test_resolve_heartbeat_target_falls_back_to_recent_session_when_needed():
+    config = Config()
+
+    target = _resolve_heartbeat_target(
+        config=config,
+        enabled_channels=["discord"],
+        sessions=[
+            {"key": "cli:direct"},
+            {"key": "system:heartbeat"},
+            {"key": "discord:room-1"},
+        ],
+    )
+
+    assert target == ("discord", "room-1")
+
+
+def test_resolve_heartbeat_notify_target_prefers_explicit_config():
+    config = Config.model_validate(
+        {
+            "gateway": {
+                "heartbeat": {
+                    "notifyChannel": "telegram",
+                    "notifyTo": "12345",
+                }
+            }
+        }
+    )
+
+    target = _resolve_heartbeat_notify_target(
+        config=config,
+        enabled_channels=["telegram"],
+        sessions=[{"key": "telegram:99999"}],
+    )
+
+    assert target == ("telegram", "12345")
+
+
+def test_resolve_heartbeat_notify_target_falls_back_to_execution_target():
+    config = Config()
+
+    target = _resolve_heartbeat_notify_target(
+        config=config,
+        enabled_channels=["discord"],
+        sessions=[{"key": "discord:room-1"}],
+    )
+
+    assert target == ("discord", "room-1")
 
 
 @pytest.fixture
