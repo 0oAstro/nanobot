@@ -589,8 +589,20 @@ def gateway(
 
     console.print(f"[green]✓[/green] Heartbeat: every {hb_cfg.interval_s}s")
 
+    # Optional HTTP API
+    http_api_runner = None
+    if config.gateway.http_api_port:
+        from nanobot.channels.http_api import start_http_api
+        console.print(f"[green]✓[/green] HTTP API: port {config.gateway.http_api_port}")
+
     async def run():
+        nonlocal http_api_runner
         try:
+            if config.gateway.http_api_port:
+                from nanobot.channels.http_api import start_http_api
+                http_api_runner = await start_http_api(
+                    agent, host=config.gateway.host, port=config.gateway.http_api_port,
+                )
             await cron.start()
             await heartbeat.start()
             await asyncio.gather(
@@ -600,6 +612,8 @@ def gateway(
         except KeyboardInterrupt:
             console.print("\nShutting down...")
         finally:
+            if http_api_runner:
+                await http_api_runner.cleanup()
             await agent.close_mcp()
             heartbeat.stop()
             cron.stop()

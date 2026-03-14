@@ -104,6 +104,7 @@ class GatewayConfig(Base):
 
     host: str = "0.0.0.0"
     port: int = 18790
+    http_api_port: int | None = None  # Enable HTTP API on this port (e.g. 8318)
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
 
 
