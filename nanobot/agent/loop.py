@@ -485,15 +485,7 @@ class AgentLoop:
                     ),
                 )
             all_models = [mid for mid, _ in await self.provider.list_models()]
-            if all_models:
-                lines = [f"Active: {self.model}", ""]
-                lines.extend(all_models)
-                content = "\n".join(lines)
-            else:
-                content = (
-                    f"Active model: {self.model}\n"
-                    "Usage: /model <model-name>"
-                )
+            content = f"Active: {self.model}"
             return OutboundMessage(
                 channel=msg.channel, chat_id=msg.chat_id,
                 content=content,
