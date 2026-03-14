@@ -3,7 +3,7 @@ from src.agent.capability import MatchingCapability
 from src.main import AgentWorker
 from src.agent.capability_worker import CapabilityWorker
 
-NANOBOT_API_URL = "https://hestia.kitty-armadillo.ts.net:8318/chat"
+NANOBOT_API_URL = "https://hestia.kitty-armadillo.ts.net/chat"
 NANOBOT_TIMEOUT = 120.0
 
 
