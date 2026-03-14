@@ -31,7 +31,8 @@ class CustomProvider(LLMProvider):
             "model": model or self.default_model,
             "messages": self._sanitize_empty_content(messages),
             "max_tokens": max(1, max_tokens),
-            "temperature": temperature,
+            # Claude API requires temperature=1 when thinking is enabled.
+            "temperature": 1 if reasoning_effort else temperature,
         }
         if reasoning_effort:
             kwargs["reasoning_effort"] = reasoning_effort
