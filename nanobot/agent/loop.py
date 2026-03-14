@@ -484,7 +484,7 @@ class AgentLoop:
                         f"Subagent model: {subagent_model}"
                     ),
                 )
-            all_models = [mid for mid, _ in await self.provider.list_models()]
+            all_models = sorted(mid for mid, _ in await self.provider.list_models())
             content = f"Active: {self.model}"
             return OutboundMessage(
                 channel=msg.channel, chat_id=msg.chat_id,
