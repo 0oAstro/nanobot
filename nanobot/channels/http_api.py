@@ -1,7 +1,7 @@
 """Minimal HTTP API channel for nanobot.
 
 Exposes a single POST /chat endpoint that accepts a JSON body
-{"message": "...", "session": "openhome:voice"} and returns
+{"message": "...", "session": "http:api"} and returns
 the agent's response as {"response": "..."}.
 
 Started automatically by the gateway when enabled in config,
