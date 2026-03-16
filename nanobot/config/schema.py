@@ -95,8 +95,6 @@ class HeartbeatConfig(Base):
 
     enabled: bool = True
     interval_s: int = 30 * 60  # 30 minutes
-    notify_channel: str | None = None
-    notify_to: str | None = None
 
 
 class GatewayConfig(Base):
@@ -104,7 +102,6 @@ class GatewayConfig(Base):
 
     host: str = "0.0.0.0"
     port: int = 18790
-    http_api_port: int | None = None  # Enable HTTP API on this port (e.g. 8318)
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
 
 
