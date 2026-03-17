@@ -30,6 +30,7 @@ def make_provider(config: Config, model: str | None = None) -> LLMProvider:
             api_key=p.api_key if p else "no-key",
             api_base=config.get_api_base(resolved_model) or "http://localhost:8000/v1",
             default_model=resolved_model,
+            extra_headers=p.extra_headers if p else None,
         )
     elif provider_name == "azure_openai":
         if not p or not p.api_key or not p.api_base:
