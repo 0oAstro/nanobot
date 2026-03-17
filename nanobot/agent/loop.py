@@ -17,6 +17,7 @@ from nanobot.agent.context import ContextBuilder
 from nanobot.agent.memory import MemoryConsolidator
 from nanobot.agent.subagent import SubagentManager
 from nanobot.agent.tools.cron import CronTool
+from nanobot.agent.skills import BUILTIN_SKILLS_DIR
 from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from nanobot.agent.tools.read_image import ReadImageTool
 from nanobot.agent.tools.message import MessageTool
@@ -136,7 +137,9 @@ class AgentLoop:
     def _register_default_tools(self) -> None:
         """Register the default set of tools."""
         allowed_dir = self.workspace if self.restrict_to_workspace else None
-        for cls in (ReadFileTool, WriteFileTool, EditFileTool, ListDirTool, ReadImageTool):
+        extra_read = [BUILTIN_SKILLS_DIR] if allowed_dir else None
+        self.tools.register(ReadFileTool(workspace=self.workspace, allowed_dir=allowed_dir, extra_allowed_dirs=extra_read))
+        for cls in (WriteFileTool, EditFileTool, ListDirTool, ReadImageTool):
             self.tools.register(cls(workspace=self.workspace, allowed_dir=allowed_dir))
         self.tools.register(ExecTool(
             working_dir=str(self.workspace),
@@ -225,7 +228,9 @@ class AgentLoop:
                     thought = self._strip_think(response.content)
                     if thought:
                         await on_progress(thought)
-                    await on_progress(self._tool_hint(response.tool_calls), tool_hint=True)
+                    tool_hint = self._tool_hint(response.tool_calls)
+                    tool_hint = self._strip_think(tool_hint)
+                    await on_progress(tool_hint, tool_hint=True)
 
                 tool_call_dicts = [
                     tc.to_openai_tool_call()
@@ -279,6 +284,9 @@ class AgentLoop:
             try:
                 msg = await asyncio.wait_for(self.bus.consume_inbound(), timeout=1.0)
             except asyncio.TimeoutError:
+                continue
+            except Exception as e:
+                logger.warning("Error consuming inbound message: {}, continuing...", e)
                 continue
 
             cmd = msg.content.strip().lower()
@@ -542,6 +550,38 @@ class AgentLoop:
     def _save_turn(self, session: Session, messages: list[dict], skip: int) -> None:
         """Save new-turn messages into session, truncating large tool results."""
         from datetime import datetime
+
+        def _truncate_multimodal_blocks(blocks: list[dict]) -> list[dict] | str:
+            kept_blocks: list[dict] = []
+            total_chars = 0
+
+            for block in blocks:
+                if not isinstance(block, dict):
+                    continue
+                if (block.get("type") == "image_url"
+                        and isinstance(block.get("image_url"), dict)
+                        and block["image_url"].get("url", "").startswith("data:image/")):
+                    continue
+
+                if block.get("type") == "text" and isinstance(block.get("text"), str):
+                    remaining = self._TOOL_RESULT_MAX_CHARS - total_chars
+                    if remaining <= 0:
+                        break
+
+                    text = block["text"]
+                    if len(text) > remaining:
+                        kept_blocks.append({"type": "text", "text": text[:remaining] + "\n... (truncated)"})
+                        total_chars = self._TOOL_RESULT_MAX_CHARS
+                        break
+
+                    kept_blocks.append(block)
+                    total_chars += len(text)
+                    continue
+
+                kept_blocks.append(block)
+
+            return kept_blocks or "[image]"
+
         for m in messages[skip:]:
             entry = dict(m)
             role, content = entry.get("role"), entry.get("content")
@@ -550,14 +590,8 @@ class AgentLoop:
             if role == "tool" and isinstance(content, str) and len(content) > self._TOOL_RESULT_MAX_CHARS:
                 entry["content"] = content[:self._TOOL_RESULT_MAX_CHARS] + "\n... (truncated)"
             elif role == "tool" and isinstance(content, list):
-                # Strip base64 image data from multimodal tool results (e.g. read_image),
-                # keeping the text block with filename/size metadata.
-                stripped = [
-                    block for block in content
-                    if not (block.get("type") == "image_url"
-                            and block.get("image_url", {}).get("url", "").startswith("data:image/"))
-                ]
-                entry["content"] = stripped or "[image]"
+                # Strip inline image payloads and keep persisted multimodal tool output bounded.
+                entry["content"] = _truncate_multimodal_blocks(content)
             elif role == "user":
                 if isinstance(content, str) and content.startswith(ContextBuilder._RUNTIME_CONTEXT_TAG):
                     # Strip the runtime-context prefix, keep only the user text.
@@ -569,10 +603,13 @@ class AgentLoop:
                 if isinstance(content, list):
                     filtered = []
                     for c in content:
+                        if not isinstance(c, dict):
+                            continue
                         if c.get("type") == "text" and isinstance(c.get("text"), str) and c["text"].startswith(ContextBuilder._RUNTIME_CONTEXT_TAG):
                             continue  # Strip runtime context from multimodal messages
                         if (c.get("type") == "image_url"
-                                and c.get("image_url", {}).get("url", "").startswith("data:image/")):
+                                and isinstance(c.get("image_url"), dict)
+                                and c["image_url"].get("url", "").startswith("data:image/")):
                             filtered.append({"type": "text", "text": "[image]"})
                         else:
                             filtered.append(c)

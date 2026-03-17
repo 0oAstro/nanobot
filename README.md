@@ -1112,6 +1112,28 @@ Use `toolTimeout` to override the default 30s per-call timeout for slow servers:
 }
 ```
 
+Use `enabledTools` to register only a subset of tools from an MCP server:
+
+```json
+{
+  "tools": {
+    "mcpServers": {
+      "filesystem": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/dir"],
+        "enabledTools": ["read_file", "mcp_filesystem_write_file"]
+      }
+    }
+  }
+}
+```
+
+`enabledTools` accepts either the raw MCP tool name (for example `read_file`) or the wrapped nanobot tool name (for example `mcp_filesystem_write_file`).
+
+- Omit `enabledTools`, or set it to `["*"]`, to register all tools.
+- Set `enabledTools` to `[]` to register no tools from that server.
+- Set `enabledTools` to a non-empty list of names to register only that subset.
+
 MCP tools are automatically discovered and registered on startup. The LLM can use them alongside built-in tools — no extra configuration needed.
 
 
@@ -1387,6 +1409,15 @@ nanobot/
 ## 🤝 Contribute & Roadmap
 
 PRs welcome! The codebase is intentionally small and readable. 🤗
+
+### Branching Strategy
+
+| Branch | Purpose |
+|--------|---------|
+| `main` | Stable releases — bug fixes and minor improvements |
+| `nightly` | Experimental features — new features and breaking changes |
+
+**Unsure which branch to target?** See [CONTRIBUTING.md](./CONTRIBUTING.md) for details.
 
 **Roadmap** — Pick an item and [open a PR](https://github.com/HKUDS/nanobot/pulls)!
 
