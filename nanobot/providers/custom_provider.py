@@ -68,4 +68,3 @@ class CustomProvider(LLMProvider):
             return [(m.id, m.id) for m in result.data]
         except Exception:
             return []
-
