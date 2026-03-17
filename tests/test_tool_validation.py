@@ -381,9 +381,7 @@ async def test_exec_head_tail_truncation() -> None:
     tool = ExecTool()
     # Generate output that exceeds _MAX_OUTPUT (10_000 chars)
     # Use python to generate output to avoid command line length limits
-    result = await tool.execute(
-        command="python -c \"print('A' * 6000 + '\\n' + 'B' * 6000)\""
-    )
+    result = await tool.execute(command="python -c \"print('A' * 6000 + '\\n' + 'B' * 6000)\"")
     assert "chars truncated" in result
     # Head portion should start with As
     assert result.startswith("A")

@@ -188,10 +188,12 @@ async def test_download_dingtalk_file(tmp_path, monkeypatch) -> None:
 
     # Mock HTTP: first POST returns downloadUrl, then GET returns file bytes
     file_content = b"fake file content"
-    channel._http = _FakeHttp(responses=[
-        _FakeResponse(200, {"downloadUrl": "https://example.com/tmpfile"}),
-        _FakeResponse(200),
-    ])
+    channel._http = _FakeHttp(
+        responses=[
+            _FakeResponse(200, {"downloadUrl": "https://example.com/tmpfile"}),
+            _FakeResponse(200),
+        ]
+    )
     channel._http._responses[1].content = file_content
 
     # Redirect media dir to tmp_path

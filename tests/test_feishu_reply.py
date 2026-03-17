@@ -1,4 +1,5 @@
 """Tests for Feishu message reply (quote) feature."""
+
 import asyncio
 import json
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ from nanobot.channels.feishu import FeishuChannel, FeishuConfig
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_feishu_channel(reply_to_message: bool = False) -> FeishuChannel:
     config = FeishuConfig(
@@ -75,6 +77,7 @@ def _make_get_message_response(text: str, msg_type: str = "text", success: bool 
 # Config tests
 # ---------------------------------------------------------------------------
 
+
 def test_feishu_config_reply_to_message_defaults_false() -> None:
     assert FeishuConfig().reply_to_message is False
 
@@ -87,6 +90,7 @@ def test_feishu_config_reply_to_message_can_be_enabled() -> None:
 # ---------------------------------------------------------------------------
 # _get_message_content_sync tests
 # ---------------------------------------------------------------------------
+
 
 def test_get_message_content_sync_returns_reply_prefix() -> None:
     channel = _make_feishu_channel()
@@ -151,6 +155,7 @@ def test_get_message_content_sync_returns_none_when_empty_text() -> None:
 # _reply_message_sync tests
 # ---------------------------------------------------------------------------
 
+
 def test_reply_message_sync_returns_true_on_success() -> None:
     channel = _make_feishu_channel()
     resp = MagicMock()
@@ -190,6 +195,7 @@ def test_reply_message_sync_returns_false_on_exception() -> None:
 # send() — reply routing tests
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_send_uses_reply_api_when_configured() -> None:
     channel = _make_feishu_channel(reply_to_message=True)
@@ -198,12 +204,14 @@ async def test_send_uses_reply_api_when_configured() -> None:
     reply_resp.success.return_value = True
     channel._client.im.v1.message.reply.return_value = reply_resp
 
-    await channel.send(OutboundMessage(
-        channel="feishu",
-        chat_id="oc_abc",
-        content="hello",
-        metadata={"message_id": "om_001"},
-    ))
+    await channel.send(
+        OutboundMessage(
+            channel="feishu",
+            chat_id="oc_abc",
+            content="hello",
+            metadata={"message_id": "om_001"},
+        )
+    )
 
     channel._client.im.v1.message.reply.assert_called_once()
     channel._client.im.v1.message.create.assert_not_called()
@@ -217,12 +225,14 @@ async def test_send_uses_create_api_when_reply_disabled() -> None:
     create_resp.success.return_value = True
     channel._client.im.v1.message.create.return_value = create_resp
 
-    await channel.send(OutboundMessage(
-        channel="feishu",
-        chat_id="oc_abc",
-        content="hello",
-        metadata={"message_id": "om_001"},
-    ))
+    await channel.send(
+        OutboundMessage(
+            channel="feishu",
+            chat_id="oc_abc",
+            content="hello",
+            metadata={"message_id": "om_001"},
+        )
+    )
 
     channel._client.im.v1.message.create.assert_called_once()
     channel._client.im.v1.message.reply.assert_not_called()
@@ -236,12 +246,14 @@ async def test_send_uses_create_api_when_no_message_id() -> None:
     create_resp.success.return_value = True
     channel._client.im.v1.message.create.return_value = create_resp
 
-    await channel.send(OutboundMessage(
-        channel="feishu",
-        chat_id="oc_abc",
-        content="hello",
-        metadata={},
-    ))
+    await channel.send(
+        OutboundMessage(
+            channel="feishu",
+            chat_id="oc_abc",
+            content="hello",
+            metadata={},
+        )
+    )
 
     channel._client.im.v1.message.create.assert_called_once()
     channel._client.im.v1.message.reply.assert_not_called()
@@ -255,12 +267,14 @@ async def test_send_skips_reply_for_progress_messages() -> None:
     create_resp.success.return_value = True
     channel._client.im.v1.message.create.return_value = create_resp
 
-    await channel.send(OutboundMessage(
-        channel="feishu",
-        chat_id="oc_abc",
-        content="thinking...",
-        metadata={"message_id": "om_001", "_progress": True},
-    ))
+    await channel.send(
+        OutboundMessage(
+            channel="feishu",
+            chat_id="oc_abc",
+            content="thinking...",
+            metadata={"message_id": "om_001", "_progress": True},
+        )
+    )
 
     channel._client.im.v1.message.create.assert_called_once()
     channel._client.im.v1.message.reply.assert_not_called()
@@ -281,12 +295,14 @@ async def test_send_fallback_to_create_when_reply_fails() -> None:
     create_resp.success.return_value = True
     channel._client.im.v1.message.create.return_value = create_resp
 
-    await channel.send(OutboundMessage(
-        channel="feishu",
-        chat_id="oc_abc",
-        content="hello",
-        metadata={"message_id": "om_001"},
-    ))
+    await channel.send(
+        OutboundMessage(
+            channel="feishu",
+            chat_id="oc_abc",
+            content="hello",
+            metadata={"message_id": "om_001"},
+        )
+    )
 
     # reply attempted first, then falls back to create
     channel._client.im.v1.message.reply.assert_called_once()
@@ -296,6 +312,7 @@ async def test_send_fallback_to_create_when_reply_fails() -> None:
 # ---------------------------------------------------------------------------
 # _on_message — parent_id / root_id metadata tests
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_on_message_captures_parent_and_root_id_in_metadata() -> None:

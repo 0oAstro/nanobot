@@ -54,6 +54,7 @@ class _FsTool(Tool):
 # read_file
 # ---------------------------------------------------------------------------
 
+
 class ReadFileTool(_FsTool):
     """Read file contents with optional line-based pagination."""
 
@@ -91,7 +92,9 @@ class ReadFileTool(_FsTool):
             "required": ["path"],
         }
 
-    async def execute(self, path: str, offset: int = 1, limit: int | None = None, **kwargs: Any) -> str:
+    async def execute(
+        self, path: str, offset: int = 1, limit: int | None = None, **kwargs: Any
+    ) -> str:
         try:
             fp = self._resolve(path)
             if not fp.exists():
@@ -139,6 +142,7 @@ class ReadFileTool(_FsTool):
 # write_file
 # ---------------------------------------------------------------------------
 
+
 class WriteFileTool(_FsTool):
     """Write content to a file."""
 
@@ -176,6 +180,7 @@ class WriteFileTool(_FsTool):
 # ---------------------------------------------------------------------------
 # edit_file
 # ---------------------------------------------------------------------------
+
 
 def _find_match(content: str, old_text: str) -> tuple[str | None, int]:
     """Locate old_text in content: exact first, then line-trimmed sliding window.
@@ -235,8 +240,12 @@ class EditFileTool(_FsTool):
         }
 
     async def execute(
-        self, path: str, old_text: str, new_text: str,
-        replace_all: bool = False, **kwargs: Any,
+        self,
+        path: str,
+        old_text: str,
+        new_text: str,
+        replace_all: bool = False,
+        **kwargs: Any,
     ) -> str:
         try:
             fp = self._resolve(path)
@@ -257,7 +266,11 @@ class EditFileTool(_FsTool):
                 )
 
             norm_new = new_text.replace("\r\n", "\n")
-            new_content = content.replace(match, norm_new) if replace_all else content.replace(match, norm_new, 1)
+            new_content = (
+                content.replace(match, norm_new)
+                if replace_all
+                else content.replace(match, norm_new, 1)
+            )
             if uses_crlf:
                 new_content = new_content.replace("\n", "\r\n")
 
@@ -281,28 +294,44 @@ class EditFileTool(_FsTool):
                 best_ratio, best_start = ratio, i
 
         if best_ratio > 0.5:
-            diff = "\n".join(difflib.unified_diff(
-                old_lines, lines[best_start : best_start + window],
-                fromfile="old_text (provided)",
-                tofile=f"{path} (actual, line {best_start + 1})",
-                lineterm="",
-            ))
+            diff = "\n".join(
+                difflib.unified_diff(
+                    old_lines,
+                    lines[best_start : best_start + window],
+                    fromfile="old_text (provided)",
+                    tofile=f"{path} (actual, line {best_start + 1})",
+                    lineterm="",
+                )
+            )
             return f"Error: old_text not found in {path}.\nBest match ({best_ratio:.0%} similar) at line {best_start + 1}:\n{diff}"
-        return f"Error: old_text not found in {path}. No similar text found. Verify the file content."
+        return (
+            f"Error: old_text not found in {path}. No similar text found. Verify the file content."
+        )
 
 
 # ---------------------------------------------------------------------------
 # list_dir
 # ---------------------------------------------------------------------------
 
+
 class ListDirTool(_FsTool):
     """List directory contents with optional recursion."""
 
     _DEFAULT_MAX = 200
     _IGNORE_DIRS = {
-        ".git", "node_modules", "__pycache__", ".venv", "venv",
-        "dist", "build", ".tox", ".mypy_cache", ".pytest_cache",
-        ".ruff_cache", ".coverage", "htmlcov",
+        ".git",
+        "node_modules",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "dist",
+        "build",
+        ".tox",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".coverage",
+        "htmlcov",
     }
 
     @property
@@ -337,8 +366,11 @@ class ListDirTool(_FsTool):
         }
 
     async def execute(
-        self, path: str, recursive: bool = False,
-        max_entries: int | None = None, **kwargs: Any,
+        self,
+        path: str,
+        recursive: bool = False,
+        max_entries: int | None = None,
+        **kwargs: Any,
     ) -> str:
         try:
             dp = self._resolve(path)

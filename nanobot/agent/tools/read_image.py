@@ -1,6 +1,7 @@
 """Read image tool: lets the agent view an image file on disk."""
 
 import base64
+import mimetypes
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,7 @@ class ReadImageTool(Tool):
 
     def _resolve(self, path: str) -> Path:
         from nanobot.agent.tools.filesystem import _resolve_path
+
         return _resolve_path(path, self._workspace, self._allowed_dir)
 
     @property
@@ -75,7 +77,7 @@ class ReadImageTool(Tool):
         except OSError as e:
             return f"Error: could not read image file: {e}"
 
-        mime = detect_image_mime(raw)
+        mime = detect_image_mime(raw) or mimetypes.guess_type(str(resolved))[0]
         if mime not in self._SUPPORTED_MIME_TYPES:
             return f"Error: not a recognized image file ({resolved.suffix})"
 

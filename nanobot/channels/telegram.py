@@ -339,8 +339,12 @@ class TelegramChannel(BaseChannel):
     def _get_media_type(path: str) -> str:
         """Guess media type from file extension."""
         ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
-        if ext in ("jpg", "jpeg", "png", "gif", "webp"):
+        if ext == "gif":
+            return "animation"
+        if ext in ("jpg", "jpeg", "png", "webp"):
             return "photo"
+        if ext in ("mp4", "mov", "avi", "mkv", "webm"):
+            return "video"
         if ext == "ogg":
             return "voice"
         if ext in ("mp3", "m4a", "wav", "aac"):
@@ -384,10 +388,18 @@ class TelegramChannel(BaseChannel):
                 media_type = self._get_media_type(media_path)
                 sender = {
                     "photo": self._app.bot.send_photo,
+                    "animation": self._app.bot.send_animation,
+                    "video": self._app.bot.send_video,
                     "voice": self._app.bot.send_voice,
                     "audio": self._app.bot.send_audio,
                 }.get(media_type, self._app.bot.send_document)
-                param = "photo" if media_type == "photo" else media_type if media_type in ("voice", "audio") else "document"
+                param = (
+                    "photo"
+                    if media_type == "photo"
+                    else media_type
+                    if media_type in ("animation", "video", "voice", "audio")
+                    else "document"
+                )
                 with open(media_path, 'rb') as f:
                     await sender(
                         chat_id=chat_id,
@@ -619,6 +631,7 @@ class TelegramChannel(BaseChannel):
         if action_prefix == "subagent":
             return f"/model subagent {model_id}"
         return f"/model {model_id}"
+
     @staticmethod
     def _sender_id(user) -> str:
         """Build sender_id with username for allowlist matching."""

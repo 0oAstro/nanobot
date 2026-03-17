@@ -21,7 +21,6 @@ PNG_1X1 = (
 
 
 class TestReadImageTool:
-
     @pytest.fixture()
     def tool(self, tmp_path):
         from nanobot.agent.tools.read_image import ReadImageTool
@@ -71,10 +70,14 @@ async def test_save_turn_strips_base64_from_tool_image_results(tmp_path):
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
 
-    with patch.object(AgentLoop, "_register_default_tools", lambda self: None), \
-         patch("nanobot.agent.loop.ContextBuilder"), \
-         patch("nanobot.agent.loop.SubagentManager"):
-        loop = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path, model="test-model")
+    with (
+        patch.object(AgentLoop, "_register_default_tools", lambda self: None),
+        patch("nanobot.agent.loop.ContextBuilder"),
+        patch("nanobot.agent.loop.SubagentManager"),
+    ):
+        loop = AgentLoop(
+            bus=MessageBus(), provider=provider, workspace=tmp_path, model="test-model"
+        )
 
     session = Session(key="cli:test")
     loop._save_turn(
@@ -110,10 +113,14 @@ async def test_save_turn_skips_non_dict_tool_blocks_and_truncates_text(tmp_path)
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
 
-    with patch.object(AgentLoop, "_register_default_tools", lambda self: None), \
-         patch("nanobot.agent.loop.ContextBuilder"), \
-         patch("nanobot.agent.loop.SubagentManager"):
-        loop = AgentLoop(bus=MessageBus(), provider=provider, workspace=tmp_path, model="test-model")
+    with (
+        patch.object(AgentLoop, "_register_default_tools", lambda self: None),
+        patch("nanobot.agent.loop.ContextBuilder"),
+        patch("nanobot.agent.loop.SubagentManager"),
+    ):
+        loop = AgentLoop(
+            bus=MessageBus(), provider=provider, workspace=tmp_path, model="test-model"
+        )
 
     long_text = "x" * (loop._TOOL_RESULT_MAX_CHARS + 100)
     session = Session(key="cli:test")

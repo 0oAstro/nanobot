@@ -45,8 +45,10 @@ def make_provider(config: Config, model: str | None = None) -> LLMProvider:
         from nanobot.providers.registry import find_by_name
 
         spec = find_by_name(provider_name)
-        if not resolved_model.startswith("bedrock/") and not (p and p.api_key) and not (
-            spec and (spec.is_oauth or spec.is_local)
+        if (
+            not resolved_model.startswith("bedrock/")
+            and not (p and p.api_key)
+            and not (spec and (spec.is_oauth or spec.is_local))
         ):
             raise RuntimeError("No API key configured.")
         provider = LiteLLMProvider(

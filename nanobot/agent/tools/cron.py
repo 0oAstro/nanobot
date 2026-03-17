@@ -61,6 +61,10 @@ class CronTool(Tool):
                     "type": "string",
                     "description": "IANA timezone for cron expressions (e.g. 'America/Vancouver')",
                 },
+                "timezone": {
+                    "type": "string",
+                    "description": "Alias for tz; IANA timezone for cron expressions.",
+                },
                 "at": {
                     "type": "string",
                     "description": "ISO datetime for one-time execution (e.g. '2026-02-12T10:30:00')",
@@ -77,10 +81,12 @@ class CronTool(Tool):
         every_seconds: int | None = None,
         cron_expr: str | None = None,
         tz: str | None = None,
+        timezone: str | None = None,
         at: str | None = None,
         job_id: str | None = None,
         **kwargs: Any,
     ) -> str:
+        tz = tz or timezone
         if action == "add":
             if self._in_cron_context.get():
                 return "Error: cannot schedule new jobs from within a cron job execution"
