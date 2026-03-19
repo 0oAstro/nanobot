@@ -24,10 +24,18 @@ class ContextBuilder:
         self.obsidian = ObsidianVault(workspace, obsidian_vault)
         self.skills = SkillsLoader(workspace)
 
-    def build_system_prompt(self, session_summary: str | None = None) -> str:
+    def build_system_prompt(
+        self,
+        session_summary: str | None = None,
+        current_message: str | None = None,
+    ) -> str:
         """Build the system prompt from identity and prompt-note files."""
         parts = [self._get_identity()]
         parts.extend(self.obsidian.read_prompt_sections())
+        if current_message:
+            retrieved = self.obsidian.retrieve_relevant_sections(current_message)
+            if retrieved:
+                parts.append("<retrieved_notes>\n" + "\n".join(retrieved) + "\n</retrieved_notes>")
         always_skills = self.skills.get_always_skills()
         if always_skills:
             always_content = self.skills.load_skills_for_context(always_skills)
@@ -149,7 +157,13 @@ You can read files, edit files, run shell commands, and use the available tools 
             merged = [{"type": "text", "text": runtime_ctx}] + user_content
 
         return [
-            {"role": "system", "content": self.build_system_prompt(session_summary)},
+            {
+                "role": "system",
+                "content": self.build_system_prompt(
+                    session_summary=session_summary,
+                    current_message=current_message,
+                ),
+            },
             *history,
             {"role": "user", "content": merged},
         ]

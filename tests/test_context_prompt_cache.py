@@ -72,3 +72,28 @@ def test_runtime_context_is_separate_untrusted_user_message(tmp_path) -> None:
     assert "Channel: cli" in user_content
     assert "Chat ID: direct" in user_content
     assert "Return exactly: OK" in user_content
+
+
+def test_system_prompt_retrieves_relevant_obsidian_notes(tmp_path) -> None:
+    workspace = _make_workspace(tmp_path)
+    vault = workspace / "obsidian-vault"
+    (vault / "People").mkdir(parents=True)
+    (vault / "Projects").mkdir(parents=True)
+    (vault / "USER.md").write_text("# User\n", encoding="utf-8")
+    (vault / "SOUL.md").write_text("# Soul\n", encoding="utf-8")
+    (vault / "People" / "Tomas Brennan.md").write_text(
+        "# Tomas Brennan\nLeads the migration from MySQL 8.0 to DuckDB 1.1.\n",
+        encoding="utf-8",
+    )
+    (vault / "Projects" / "Analytics Migration.md").write_text(
+        "# Analytics Migration\nWe are migrating from MySQL 8.0 to DuckDB 1.1 with [[Tomas Brennan]].\n",
+        encoding="utf-8",
+    )
+
+    builder = ContextBuilder(workspace)
+    prompt = builder.build_system_prompt(current_message="Who is leading the DuckDB migration?")
+
+    assert "<retrieved_notes>" in prompt
+    assert 'path="Projects/Analytics Migration.md"' in prompt
+    assert 'path="People/Tomas Brennan.md"' in prompt
+    assert "DuckDB 1.1" in prompt
