@@ -130,6 +130,7 @@ def _make_telegram_update(
     entities=None,
     caption_entities=None,
     reply_to_message=None,
+    message_thread_id: int | None = None,
 ):
     user = SimpleNamespace(id=12345, username="alice", first_name="Alice")
     message = SimpleNamespace(
@@ -145,7 +146,7 @@ def _make_telegram_update(
         audio=None,
         document=None,
         media_group_id=None,
-        message_thread_id=None,
+        message_thread_id=message_thread_id,
         message_id=1,
     )
     return SimpleNamespace(message=message, effective_user=user)
@@ -707,6 +708,33 @@ async def test_forward_command_does_not_inject_reply_context() -> None:
 
     assert len(handled) == 1
     assert handled[0]["content"] == "/new"
+
+
+@pytest.mark.asyncio
+async def test_forward_stop_command_uses_topic_session_key() -> None:
+    """/stop must keep topic-scoped session routing so it cancels the right task set."""
+    channel = TelegramChannel(
+        TelegramConfig(enabled=True, token="123:abc", allow_from=["*"], group_policy="open"),
+        MessageBus(),
+    )
+    channel._app = _FakeApp(lambda: None)
+    handled = []
+
+    async def capture_handle(**kwargs) -> None:
+        handled.append(kwargs)
+
+    channel._handle_message = capture_handle
+
+    update = _make_telegram_update(
+        text="/stop",
+        chat_type="supergroup",
+        message_thread_id=42,
+    )
+    await channel._forward_command(update, None)
+
+    assert len(handled) == 1
+    assert handled[0]["content"] == "/stop"
+    assert handled[0]["session_key"] == "telegram:-100123:topic:42"
 
 
 @pytest.mark.asyncio

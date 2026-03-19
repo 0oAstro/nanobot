@@ -169,6 +169,44 @@ class TestSubagentCancellation:
         assert await mgr.cancel_by_session("nonexistent") == 0
 
     @pytest.mark.asyncio
+    async def test_run_inline_is_cancelable_by_session(self, tmp_path):
+        from nanobot.agent.subagent import SubagentManager
+        from nanobot.bus.queue import MessageBus
+
+        bus = MessageBus()
+        provider = MagicMock()
+        provider.get_default_model.return_value = "test-model"
+
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def slow_chat_with_retry(*args, **kwargs):
+            started.set()
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        provider.chat_with_retry = slow_chat_with_retry
+        mgr = SubagentManager(provider=provider, workspace=tmp_path, bus=bus)
+
+        task = asyncio.create_task(
+            mgr.run_inline(
+                "check heartbeat",
+                session_key="test:c1",
+                origin_channel="test",
+                origin_chat_id="c1",
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+
+        assert await mgr.cancel_by_session("test:c1") == 1
+        assert cancelled.is_set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    @pytest.mark.asyncio
     async def test_subagent_preserves_reasoning_fields_in_tool_turn(self, monkeypatch, tmp_path):
         from nanobot.agent.subagent import SubagentManager
         from nanobot.bus.queue import MessageBus

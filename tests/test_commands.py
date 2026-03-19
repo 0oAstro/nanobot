@@ -73,7 +73,14 @@ def test_onboard_fresh_install(mock_paths):
     assert "nanobot is ready" in result.stdout
     assert config_file.exists()
     assert (workspace_dir / "AGENTS.md").exists()
-    assert (workspace_dir / "memory" / "MEMORY.md").exists()
+    assert (workspace_dir / "obsidian-vault" / "USER.md").exists()
+    assert (workspace_dir / "obsidian-vault" / "SOUL.md").exists()
+    assert (workspace_dir / "obsidian-vault" / "Preferences").is_dir()
+    assert (workspace_dir / "obsidian-vault" / "People").is_dir()
+    assert (workspace_dir / "obsidian-vault" / "Projects").is_dir()
+    assert (workspace_dir / "obsidian-vault" / "Library").is_dir()
+    assert (workspace_dir / "obsidian-vault" / "Checkpoints").is_dir()
+    assert (workspace_dir / "obsidian-vault" / "Scratch").is_dir()
     expected_workspace = Config().workspace_path
     assert mock_ws.call_args.args == (expected_workspace,)
 

@@ -13,8 +13,8 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from loguru import logger
 
+from nanobot.agent.compaction import ContextCompactor
 from nanobot.agent.context import ContextBuilder
-from nanobot.agent.memory import MemoryConsolidator
 from nanobot.agent.subagent import SubagentManager
 from nanobot.agent.tools.cron import CronTool
 from nanobot.agent.skills import BUILTIN_SKILLS_DIR
@@ -68,6 +68,8 @@ class AgentLoop:
         max_iterations: int = 40,
         subagent_max_iterations: int | None = None,
         context_window_tokens: int = 65_536,
+        compact_threshold_pct: float = 0.9,
+        obsidian_vault: str | None = None,
         web_search_config: WebSearchConfig | None = None,
         web_proxy: str | None = None,
         exec_config: ExecToolConfig | None = None,
@@ -88,13 +90,14 @@ class AgentLoop:
         self.max_iterations = max_iterations
         self.subagent_max_iterations = subagent_max_iterations or max_iterations
         self.context_window_tokens = context_window_tokens
+        self.compact_threshold_pct = compact_threshold_pct
         self.web_search_config = web_search_config or WebSearchConfig()
         self.web_proxy = web_proxy
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
 
-        self.context = ContextBuilder(workspace)
+        self.context = ContextBuilder(workspace, obsidian_vault=obsidian_vault)
         self.sessions = session_manager or SessionManager(workspace)
         self.runs = RunManager(workspace)
         self.tools = ToolRegistry()
@@ -119,14 +122,10 @@ class AgentLoop:
         self._active_tasks: dict[str, list[asyncio.Task]] = {}  # session_key -> tasks
         self._background_tasks: list[asyncio.Task] = []
         self._processing_lock = asyncio.Lock()
-        self.memory_consolidator = MemoryConsolidator(
-            workspace=workspace,
+        self.compactor = ContextCompactor(
             provider=provider,
             model=self.model,
-            sessions=self.sessions,
-            context_window_tokens=context_window_tokens,
-            build_messages=self.context.build_messages,
-            get_tool_definitions=self.tools.get_definitions,
+            threshold_pct=compact_threshold_pct,
         )
         self.missions = MissionManager(
             provider=provider,
@@ -163,6 +162,7 @@ class AgentLoop:
         self.provider = main_provider
         self.model = main_model
         self.subagent_model = subagent_model
+        self.context_window_tokens = cfg.agents.defaults.context_window_tokens
         self.web_search_config = cfg.tools.web.search
         self.web_proxy = cfg.tools.web.proxy or None
         self.exec_config = cfg.tools.exec
@@ -178,9 +178,11 @@ class AgentLoop:
         self.subagents.max_iterations = cfg.agents.defaults.subagent_max_tool_iterations
         self.subagent_max_iterations = cfg.agents.defaults.subagent_max_tool_iterations
 
-        self.memory_consolidator.provider = main_provider
-        self.memory_consolidator.model = main_model
-        self.memory_consolidator.context_window_tokens = cfg.agents.defaults.context_window_tokens
+        self.context = ContextBuilder(self.workspace, obsidian_vault=cfg.agents.defaults.obsidian_vault)
+        self.compactor.provider = main_provider
+        self.compactor.model = main_model
+        self.compactor.threshold_pct = cfg.agents.defaults.compact_threshold_pct
+        self.compact_threshold_pct = cfg.agents.defaults.compact_threshold_pct
         self.missions.provider = main_provider
         self.missions.model = main_model
         self.missions.runs = self.runs
@@ -544,17 +546,18 @@ class AgentLoop:
             logger.info("Processing system message from {}", msg.sender_id)
             key = f"{channel}:{chat_id}"
             session = self.sessions.get_or_create(key)
-            await self.memory_consolidator.maybe_consolidate_by_tokens(session)
             self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
             history = session.get_history(max_messages=0)
             messages = self.context.build_messages(
                 history=history,
-                current_message=msg.content, channel=channel, chat_id=chat_id,
+                current_message=msg.content,
+                channel=channel,
+                chat_id=chat_id,
+                session_summary=session.summary,
             )
             final_content, _, all_msgs, _ = await self._run_agent_loop(messages)
             self._save_turn(session, all_msgs, 1 + len(history))
             self.sessions.save(session)
-            self._schedule_background(self.memory_consolidator.maybe_consolidate_by_tokens(session))
             return OutboundMessage(channel=channel, chat_id=chat_id,
                                   content=final_content or "Background task completed.")
 
@@ -562,23 +565,17 @@ class AgentLoop:
         logger.info("Processing message from {}:{}: {}", msg.channel, msg.sender_id, preview)
 
         key = session_key or msg.session_key
-        session = self.sessions.get_or_create(key)
 
         # Slash commands
         raw = msg.content.strip()
         first_token = raw.split(maxsplit=1)[0].lower() if raw else ""
         cmd_base = first_token.split("@", 1)[0]
         if cmd_base == "/new":
-            snapshot = session.messages[session.last_consolidated:]
-            session.clear()
-            self.sessions.save(session)
-            self.sessions.invalidate(session.key)
-
-            if snapshot:
-                self._schedule_background(self.memory_consolidator.archive_messages(snapshot))
-
+            self.sessions.reset(key)
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
                                   content="New session started.")
+
+        session = self.sessions.get_or_create(key)
         if cmd_base == "/help":
             lines = [
                 "🐈 nanobot commands:",
@@ -740,8 +737,6 @@ class AgentLoop:
                     "_current_model": self.model,
                 } if all_models else {},
             )
-        await self.memory_consolidator.maybe_consolidate_by_tokens(session)
-
         parent_run = None
         if msg.metadata.get("parent_run_id"):
             parent_run = self.runs.load(str(msg.metadata["parent_run_id"]))
@@ -768,8 +763,26 @@ class AgentLoop:
                 history=history,
                 current_message=msg.content,
                 media=msg.media if msg.media else None,
-                channel=msg.channel, chat_id=msg.chat_id,
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                session_summary=session.summary,
             )
+            if self.compactor.should_compact(
+                initial_messages,
+                self.tools.get_definitions(),
+                self.context_window_tokens,
+            ):
+                session.summary = await self.subagents.compact_history(session.summary, history) or ""
+                session.messages = []
+                history = []
+                initial_messages = self.context.build_messages(
+                    history=[],
+                    current_message=msg.content,
+                    media=msg.media if msg.media else None,
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    session_summary=session.summary,
+                )
             parent_run = self.runs.create_parent_run(
                 session_key=key,
                 goal=msg.content,
@@ -821,7 +834,6 @@ class AgentLoop:
                 msg.chat_id,
             )
         self.sessions.save(session)
-        self._schedule_background(self.memory_consolidator.maybe_consolidate_by_tokens(session))
 
         if (mt := self.tools.get("message")) and isinstance(mt, MessageTool) and mt._sent_in_turn:
             return None

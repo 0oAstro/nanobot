@@ -76,27 +76,6 @@ def test_legitimate_tool_pairs_preserved_after_trim():
     assert history[0]["role"] == "user"
 
 
-# --- last_consolidated > 0 ---
-
-
-def test_orphan_trim_with_last_consolidated():
-    """Orphan trimming works correctly when session is partially consolidated."""
-    session = Session(key="test:consolidated")
-    for i in range(10):
-        session.messages.append({"role": "user", "content": f"old {i}"})
-        session.messages.extend(_tool_turn("cons", i))
-    session.last_consolidated = 30
-
-    session.messages.append({"role": "user", "content": "recent"})
-    for i in range(15):
-        session.messages.extend(_tool_turn("new", i))
-    session.messages.append({"role": "user", "content": "latest"})
-
-    history = session.get_history(max_messages=20)
-    _assert_no_orphans(history)
-    assert all(m.get("role") != "tool" or m["tool_call_id"].startswith("new_") for m in history)
-
-
 # --- Edge: no tool messages at all ---
 
 

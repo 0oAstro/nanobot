@@ -34,9 +34,6 @@ def _make_loop(tmp_path, *, model: str = "main-model"):
 
     loop.sessions = MagicMock()
     loop.sessions.get_or_create.return_value = session
-    loop.memory_consolidator = MagicMock()
-    loop.memory_consolidator.archive_messages = AsyncMock(return_value=True)
-    loop.memory_consolidator.maybe_consolidate_by_tokens = AsyncMock(return_value=None)
     return loop, provider, subagents
 
 
@@ -194,10 +191,8 @@ async def test_help_command_accepts_telegram_command_suffix(tmp_path):
 @pytest.mark.asyncio
 async def test_new_command_accepts_telegram_command_suffix(tmp_path):
     loop, _provider, _subagents = _make_loop(tmp_path)
-    loop.sessions.get_or_create.return_value.messages = [
-        {"role": "user", "content": "hello"},
-        {"role": "assistant", "content": "hi"},
-    ]
+    loop.compactor.should_compact = MagicMock()
+    loop.compactor.compact_history = AsyncMock()
 
     response = await loop._process_message(
         InboundMessage(
@@ -205,14 +200,10 @@ async def test_new_command_accepts_telegram_command_suffix(tmp_path):
         )
     )
 
-    loop.memory_consolidator.archive_messages.assert_called_once_with(
-        [
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "hi"},
-        ]
-    )
-    loop.sessions.save.assert_called_once()
-    loop.sessions.invalidate.assert_called_once()
+    loop.sessions.reset.assert_called_once_with("telegram:123")
+    loop.sessions.get_or_create.assert_not_called()
+    loop.compactor.should_compact.assert_not_called()
+    loop.compactor.compact_history.assert_not_awaited()
     assert response is not None
     assert response.content == "New session started."
 

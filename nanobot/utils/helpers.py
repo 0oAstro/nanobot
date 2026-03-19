@@ -180,8 +180,9 @@ def estimate_prompt_tokens_chain(
 
 
 def sync_workspace_templates(workspace: Path, silent: bool = False) -> list[str]:
-    """Sync bundled templates to workspace. Only creates missing files."""
+    """Sync bundled templates to workspace and initialize the Obsidian vault."""
     from importlib.resources import files as pkg_files
+    from nanobot.agent.obsidian import ObsidianVault
 
     try:
         tpl = pkg_files("nanobot") / "templates"
@@ -200,10 +201,18 @@ def sync_workspace_templates(workspace: Path, silent: bool = False) -> list[str]
         added.append(str(dest.relative_to(workspace)))
 
     for item in tpl.iterdir():
+        if item.name in {"USER.md", "SOUL.md", "TOOLS.md"}:
+            continue
         if item.name.endswith(".md") and not item.name.startswith("."):
             _write(item, workspace / item.name)
-    _write(tpl / "memory" / "MEMORY.md", workspace / "memory" / "MEMORY.md")
-    _write(None, workspace / "memory" / "HISTORY.md")
+
+    vault = ObsidianVault(workspace)
+    for path in vault.init_prompt_notes(
+        user_template=(tpl / "USER.md").read_text(encoding="utf-8"),
+        soul_template=(tpl / "SOUL.md").read_text(encoding="utf-8"),
+    ):
+        added.append(str(path.relative_to(workspace)))
+
     (workspace / "skills").mkdir(exist_ok=True)
 
     if added and not silent:

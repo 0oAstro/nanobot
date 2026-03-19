@@ -38,6 +38,8 @@ class AgentDefaults(Base):
     )
     max_tokens: int = 8192
     context_window_tokens: int = 65_536
+    compact_threshold_pct: float = 0.9
+    obsidian_vault: str | None = None
     temperature: float = 0.1
     max_tool_iterations: int = 40
     subagent_max_tool_iterations: int = 40

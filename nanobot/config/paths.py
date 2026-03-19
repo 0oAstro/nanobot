@@ -50,6 +50,17 @@ def get_workspace_path(workspace: str | None = None) -> Path:
     return ensure_dir(path)
 
 
+def get_obsidian_vault_path(workspace: Path, configured_path: str | None = None) -> Path:
+    """Resolve and ensure the Obsidian vault path."""
+    if configured_path:
+        path = Path(configured_path).expanduser()
+        if not path.is_absolute():
+            path = workspace / path
+    else:
+        path = workspace / "obsidian-vault"
+    return ensure_dir(path)
+
+
 def get_cli_history_path() -> Path:
     """Return the shared CLI history file path."""
     return get_global_runtime_dir() / "history" / "cli_history"

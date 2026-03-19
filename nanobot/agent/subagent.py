@@ -3,12 +3,14 @@
 import asyncio
 import json
 import re
+import uuid
 from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
 from nanobot.agent.skills import BUILTIN_SKILLS_DIR
+from nanobot.agent.compaction import COMPACTION_PROMPT
 from nanobot.agent.tools.handoff import ReturnHandoffTool
 from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from nanobot.agent.tools.registry import ToolRegistry
@@ -111,8 +113,9 @@ class SubagentManager:
         *,
         system_prompt: str | None = None,
         protected_paths: list[str] | None = None,
-    ) -> None:
-        """Execute the subagent task and announce the result."""
+        announce: bool = True,
+    ) -> ChildHandoff:
+        """Execute the subagent task and optionally announce the result."""
         logger.info("Subagent [{}] starting task: {}", task_id, label)
 
         try:
@@ -250,15 +253,91 @@ class SubagentManager:
                     )
 
             logger.info("Subagent [{}] completed successfully", task_id)
-            await self._announce_result(task_id, handoff, origin)
+            if announce:
+                await self._announce_result(task_id, handoff, origin)
+            return handoff
 
         except Exception as e:
             logger.error("Subagent [{}] failed: {}", task_id, e)
-            await self._announce_result(
+            handoff = ChildHandoff.normalize(None, fallback_error=f"Subagent failed: {e}")
+            if announce:
+                await self._announce_result(task_id, handoff, origin)
+            return handoff
+
+    async def run_inline(
+        self,
+        task: str,
+        label: str | None = None,
+        *,
+        origin_channel: str = "cli",
+        origin_chat_id: str = "direct",
+        session_key: str | None = None,
+        system_prompt: str | None = None,
+        protected_paths: list[str] | None = None,
+    ) -> str:
+        """Run a subagent task inline while still tracking it for cancellation."""
+        display_label = label or task[:30] + ("..." if len(task) > 30 else "")
+        origin = {"channel": origin_channel, "chat_id": origin_chat_id}
+        task_id = f"adhoc-{uuid.uuid4().hex[:8]}"
+
+        bg_task = asyncio.create_task(
+            self._run_subagent(
                 task_id,
-                ChildHandoff.normalize(None, fallback_error=f"Subagent failed: {e}"),
+                task,
+                display_label,
                 origin,
+                system_prompt=system_prompt,
+                protected_paths=protected_paths,
+                announce=False,
             )
+        )
+        self._running_tasks[task_id] = bg_task
+        if session_key:
+            self._session_tasks.setdefault(session_key, set()).add(task_id)
+
+        def _cleanup(_: asyncio.Task) -> None:
+            self._running_tasks.pop(task_id, None)
+            if session_key and (ids := self._session_tasks.get(session_key)):
+                ids.discard(task_id)
+                if not ids:
+                    del self._session_tasks[session_key]
+
+        bg_task.add_done_callback(_cleanup)
+        handoff = await bg_task
+        return self._format_handoff_response(handoff)
+
+    async def compact_history(
+        self,
+        existing_summary: str | None,
+        history: list[dict[str, Any]],
+    ) -> str | None:
+        """Summarize older session history using the subagent model/provider."""
+        if not history:
+            return existing_summary
+
+        parts: list[str] = []
+        if existing_summary:
+            parts.append(f"Existing checkpoint:\n{existing_summary}")
+
+        formatted: list[str] = []
+        for message in history:
+            role = str(message.get("role") or "unknown").upper()
+            content = message.get("content")
+            body = content if isinstance(content, str) else str(content)
+            if body:
+                formatted.append(f"{role}: {body}")
+        parts.append("Conversation history:\n" + "\n\n".join(formatted))
+
+        response = await self.provider.chat_with_retry(
+            messages=[
+                {"role": "system", "content": COMPACTION_PROMPT},
+                {"role": "user", "content": "\n\n".join(parts)},
+            ],
+            model=self.model,
+            tools=None,
+        )
+        summary = (response.content or "").strip()
+        return summary or existing_summary
 
     async def _announce_result(
         self,
@@ -344,6 +423,16 @@ class SubagentManager:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         return len(tasks)
+
+    @staticmethod
+    def _format_handoff_response(handoff: ChildHandoff) -> str:
+        """Convert a child handoff into a concise user-facing response."""
+        parts = [handoff.summary or "Task completed."]
+        if handoff.what_remains:
+            parts.append(f"Remaining: {handoff.what_remains}")
+        if handoff.next_action:
+            parts.append(f"Next: {handoff.next_action}")
+        return "\n".join(parts)
 
     def get_running_count(self) -> int:
         """Return the number of currently running subagents."""

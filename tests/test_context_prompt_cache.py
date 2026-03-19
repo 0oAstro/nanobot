@@ -27,8 +27,9 @@ def _make_workspace(tmp_path: Path) -> Path:
 def test_bootstrap_files_are_backed_by_templates() -> None:
     template_dir = pkg_files("nanobot") / "templates"
 
-    for filename in ContextBuilder.BOOTSTRAP_FILES:
-        assert (template_dir / filename).is_file(), f"missing bootstrap template: {filename}"
+    assert (template_dir / "AGENTS.md").is_file()
+    assert (template_dir / "USER.md").is_file()
+    assert (template_dir / "SOUL.md").is_file()
 
 
 def test_system_prompt_stays_stable_when_clock_changes(tmp_path, monkeypatch) -> None:

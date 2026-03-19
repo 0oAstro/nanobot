@@ -475,6 +475,8 @@ def gateway(
         max_iterations=config.agents.defaults.max_tool_iterations,
         subagent_max_iterations=config.agents.defaults.subagent_max_tool_iterations,
         context_window_tokens=config.agents.defaults.context_window_tokens,
+        compact_threshold_pct=config.agents.defaults.compact_threshold_pct,
+        obsidian_vault=config.agents.defaults.obsidian_vault,
         web_search_config=config.tools.web.search,
         web_proxy=config.tools.web.proxy or None,
         exec_config=config.tools.exec,
@@ -559,18 +561,14 @@ def gateway(
 
     # Create heartbeat service
     async def on_heartbeat_execute(tasks: str) -> str:
-        """Phase 2: execute heartbeat tasks through the full agent loop."""
+        """Phase 2: execute heartbeat tasks through a tracked subagent."""
         channel, chat_id = _pick_heartbeat_target()
-
-        async def _silent(*_args, **_kwargs):
-            pass
-
-        return await agent.process_direct(
+        return await agent.subagents.run_inline(
             tasks,
+            label="heartbeat",
+            origin_channel=channel,
+            origin_chat_id=chat_id,
             session_key="heartbeat",
-            channel=channel,
-            chat_id=chat_id,
-            on_progress=_silent,
         )
 
     async def on_heartbeat_notify(response: str) -> None:
@@ -694,6 +692,8 @@ def agent(
         max_iterations=config.agents.defaults.max_tool_iterations,
         subagent_max_iterations=config.agents.defaults.subagent_max_tool_iterations,
         context_window_tokens=config.agents.defaults.context_window_tokens,
+        compact_threshold_pct=config.agents.defaults.compact_threshold_pct,
+        obsidian_vault=config.agents.defaults.obsidian_vault,
         web_search_config=config.tools.web.search,
         web_proxy=config.tools.web.proxy or None,
         exec_config=config.tools.exec,

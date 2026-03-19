@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from nanobot.agent.loop import AgentLoop
+from nanobot.agent.subagent import SubagentManager
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMResponse, ToolCallRequest
@@ -203,3 +204,52 @@ async def test_subagent_can_complete_via_return_handoff_tool(tmp_path: Path) -> 
     assert child.result_handoff is not None
     assert child.result_handoff["summary"] == "date retrieved"
     assert child.result_handoff["what_was_done"] == "ran date"
+
+
+@pytest.mark.asyncio
+async def test_subagent_compaction_uses_subagent_provider(tmp_path: Path) -> None:
+    bus = MessageBus()
+    provider = MagicMock()
+    provider.get_default_model.return_value = "sub-model"
+    provider.chat_with_retry = AsyncMock(
+        return_value=LLMResponse(content="compressed checkpoint", tool_calls=[])
+    )
+
+    manager = SubagentManager(provider=provider, workspace=tmp_path, bus=bus, model="sub-model")
+
+    summary = await manager.compact_history(
+        "existing checkpoint",
+        [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "reply"}],
+    )
+
+    assert summary == "compressed checkpoint"
+    provider.chat_with_retry.assert_awaited_once()
+    assert provider.chat_with_retry.await_args.kwargs["model"] == "sub-model"
+
+
+@pytest.mark.asyncio
+async def test_loop_routes_compaction_through_subagents(tmp_path: Path) -> None:
+    loop = _make_loop(tmp_path)
+    loop.compactor.should_compact = MagicMock(return_value=True)
+    loop.compactor.compact_history = AsyncMock(side_effect=AssertionError("main compactor used"))
+    loop.subagents.compact_history = AsyncMock(return_value="subagent checkpoint")
+    loop.provider.chat_with_retry = AsyncMock(
+        return_value=LLMResponse(content="final answer", tool_calls=[])
+    )
+
+    session = loop.sessions.get_or_create("cli:direct")
+    session.messages.extend(
+        [
+            {"role": "user", "content": "older context"},
+            {"role": "assistant", "content": "older reply"},
+        ]
+    )
+
+    response = await loop._process_message(
+        InboundMessage(channel="cli", sender_id="user", chat_id="direct", content="new turn")
+    )
+
+    assert response is not None
+    assert response.content == "final answer"
+    loop.subagents.compact_history.assert_awaited_once()
+    assert session.summary == "subagent checkpoint"
