@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -31,6 +32,7 @@ from nanobot.utils.helpers import split_message
 TELEGRAM_MAX_MESSAGE_LEN = 4000  # Telegram message character limit
 TELEGRAM_REPLY_CONTEXT_MAX_LEN = TELEGRAM_MAX_MESSAGE_LEN  # Max length for reply context in user message
 MODEL_PICKER_PAGE_SIZE = 6
+TELEGRAM_MAX_CALLBACK_DATA_LEN = 64
 
 
 def _strip_md(s: str) -> str:
@@ -203,6 +205,7 @@ class TelegramChannel(BaseChannel):
     BOT_COMMANDS = [
         BotCommand("start", "Start the bot"),
         BotCommand("new", "Start a new conversation"),
+        BotCommand("mission", "Start or inspect a mission"),
         BotCommand("model", "Pick/set main or subagent model"),
         BotCommand("reload", "Reload config/runtime"),
         BotCommand("stop", "Stop the current task"),
@@ -271,6 +274,7 @@ class TelegramChannel(BaseChannel):
         # Add command handlers
         self._app.add_handler(CommandHandler("start", self._on_start))
         self._app.add_handler(CommandHandler("new", self._forward_command))
+        self._app.add_handler(CommandHandler("mission", self._forward_command))
         self._app.add_handler(CommandHandler("model", self._on_model))
         self._app.add_handler(CommandHandler("reload", self._forward_command))
         self._app.add_handler(CommandHandler("stop", self._forward_command))
@@ -430,12 +434,25 @@ class TelegramChannel(BaseChannel):
             }.get(model_action, "set")
             page = int(metadata.get("_model_page") or 0)
             current_model = metadata.get("_current_model", "")
+            logger.debug(
+                "Telegram model picker render: chat_id={} action={} models={} current_model={}",
+                msg.chat_id,
+                action_prefix,
+                len(model_list),
+                current_model,
+            )
             reply_markup = self._build_model_keyboard(
                 chat_id=str(msg.chat_id),
                 model_list=model_list,
                 action_prefix=action_prefix,
                 page=page,
                 current_model=current_model,
+            )
+        elif metadata.get("_model_action"):
+            logger.debug(
+                "Telegram model picker skipped: chat_id={} action={} no model list in metadata",
+                msg.chat_id,
+                metadata.get("_model_action"),
             )
 
         # Send text content
@@ -493,6 +510,7 @@ class TelegramChannel(BaseChannel):
         await update.message.reply_text(
             "🐈 nanobot commands:\n"
             "/new — Start a new conversation\n"
+            "/mission — Start or inspect a structured mission\n"
             "/model — Pick or set main/subagent model\n"
             "/reload — Reload config/runtime\n"
             "/stop — Stop the current task\n"
@@ -517,6 +535,11 @@ class TelegramChannel(BaseChannel):
         if not query or not query.data:
             return
 
+        logger.debug(
+            "Telegram model callback: chat_id={} data={}",
+            getattr(query.message, "chat_id", "unknown"),
+            query.data,
+        )
         await query.answer()
         payload = query.data.removeprefix("model:")
         parts = payload.split(":", 3)
@@ -535,15 +558,34 @@ class TelegramChannel(BaseChannel):
             return
         chat_id = str(query.message.chat_id)
         sender_id = self._sender_id(query.from_user) if query.from_user else "unknown"
-        state = self._model_picker_state.get(chat_id)
-        if not state:
-            return
-        model_token = parts[1] if len(parts) == 2 else parts[2] if len(parts) >= 3 else payload
-        model_id = state.token_to_model.get(model_token)
+        action_prefix = action
+        model_id = self._decode_model_callback(parts)
         if not model_id:
-            return
-        command = self._model_command_for_action(state.action_prefix, model_id)
-        label = "main model" if state.action_prefix == "set" else "subagent model"
+            state = self._model_picker_state.get(chat_id)
+            if not state:
+                logger.debug("Telegram model callback expired: chat_id={} no picker state", chat_id)
+                await query.answer("This model picker expired. Run /model again.", show_alert=False)
+                return
+            model_token = parts[1] if len(parts) == 2 else parts[2] if len(parts) >= 3 else payload
+            model_id = state.token_to_model.get(model_token)
+            if not model_id:
+                logger.debug(
+                    "Telegram model callback expired: chat_id={} unknown token={} action={}",
+                    chat_id,
+                    model_token,
+                    action,
+                )
+                await query.answer("This model picker expired. Run /model again.", show_alert=False)
+                return
+            action_prefix = state.action_prefix
+        logger.debug(
+            "Telegram model callback resolved: chat_id={} action={} model_id={}",
+            chat_id,
+            action_prefix,
+            model_id,
+        )
+        command = self._model_command_for_action(action_prefix, model_id)
+        label = "main model" if action_prefix == "set" else "subagent model"
 
         await self._handle_message(
             sender_id=sender_id,
@@ -600,9 +642,10 @@ class TelegramChannel(BaseChannel):
             label = f"\u2713 {mid}" if mid == state.current_model else mid
             token = str(idx)
             state.token_to_model[token] = mid
-            buttons.append([
-                InlineKeyboardButton(label, callback_data=f"model:{state.action_prefix}:{token}")
-            ])
+            callback_data = self._encode_model_callback(state.action_prefix, mid)
+            if not callback_data:
+                callback_data = f"model:{state.action_prefix}:{token}"
+            buttons.append([InlineKeyboardButton(label, callback_data=callback_data)])
 
         nav_row: list[InlineKeyboardButton] = []
         if state.page > 0:
@@ -631,6 +674,27 @@ class TelegramChannel(BaseChannel):
         if action_prefix == "subagent":
             return f"/model subagent {model_id}"
         return f"/model {model_id}"
+
+    @staticmethod
+    def _encode_model_callback(action_prefix: str, model_id: str) -> str | None:
+        """Encode a model id directly into callback_data when it fits Telegram limits."""
+        encoded = base64.urlsafe_b64encode(model_id.encode("utf-8")).decode("ascii").rstrip("=")
+        callback_data = f"model:{action_prefix}:id:{encoded}"
+        if len(callback_data.encode("utf-8")) >= TELEGRAM_MAX_CALLBACK_DATA_LEN:
+            return None
+        return callback_data
+
+    @staticmethod
+    def _decode_model_callback(parts: list[str]) -> str | None:
+        """Decode a direct model callback payload."""
+        if len(parts) != 3 or parts[1] != "id":
+            return None
+        encoded = parts[2]
+        padded = encoded + "=" * (-len(encoded) % 4)
+        try:
+            return base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            return None
 
     @staticmethod
     def _sender_id(user) -> str:

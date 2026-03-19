@@ -10,6 +10,7 @@ from nanobot.utils.helpers import current_time_str
 
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader
+from nanobot.prompts import load_prompt
 from nanobot.utils.helpers import build_assistant_message, detect_image_mime
 
 
@@ -50,6 +51,8 @@ The following skills extend your capabilities. To use a skill, read its SKILL.md
 Skills with available="false" need dependencies installed first - you can try installing them with apt/brew.
 
 {skills_summary}""")
+
+        parts.append(load_prompt("orchestration_system.md"))
 
         return "\n\n---\n\n".join(parts)
 

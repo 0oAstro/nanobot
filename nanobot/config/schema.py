@@ -40,6 +40,7 @@ class AgentDefaults(Base):
     context_window_tokens: int = 65_536
     temperature: float = 0.1
     max_tool_iterations: int = 40
+    subagent_max_tool_iterations: int = 40
     # Deprecated compatibility field: accepted from old configs but ignored at runtime.
     memory_window: int | None = Field(default=None, exclude=True)
     reasoning_effort: str | None = None  # low / medium / high — enables LLM thinking mode
@@ -64,6 +65,7 @@ class ProviderConfig(Base):
     api_key: str = ""
     api_base: str | None = None
     extra_headers: dict[str, str] | None = None  # Custom headers (e.g. APP-Code for AiHubMix)
+    models: list[str] = Field(default_factory=list)  # Optional explicit model catalog for pickers
 
 
 class ProvidersConfig(Base):
@@ -173,6 +175,7 @@ class Config(BaseSettings):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    environment: dict[str, str] = Field(default_factory=dict)
 
     @property
     def workspace_path(self) -> Path:

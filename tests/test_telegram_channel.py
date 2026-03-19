@@ -725,6 +725,10 @@ async def test_on_help_includes_restart_command() -> None:
     assert "/restart" in help_text
 
 
+def test_bot_commands_include_mission() -> None:
+    assert any(command.command == "mission" for command in TelegramChannel.BOT_COMMANDS)
+
+
 def test_build_model_keyboard_uses_compact_callback_tokens() -> None:
     channel = TelegramChannel(
         TelegramConfig(enabled=True, token="123:abc", allow_from=["*"]), MessageBus()
@@ -739,7 +743,7 @@ def test_build_model_keyboard_uses_compact_callback_tokens() -> None:
     )
 
     callback_data = keyboard.inline_keyboard[0][0].callback_data
-    assert callback_data == "model:set:0"
+    assert callback_data.startswith("model:set:")
     assert len(callback_data) < 64
 
 
@@ -749,16 +753,17 @@ async def test_model_callback_preserves_subagent_action() -> None:
         TelegramConfig(enabled=True, token="123:abc", allow_from=["*"]), MessageBus()
     )
     channel._handle_message = AsyncMock()
-    channel._build_model_keyboard(
+    keyboard = channel._build_model_keyboard(
         chat_id="123",
         model_list=["provider/model-a"],
         action_prefix="subagent",
         page=0,
         current_model="provider/model-a",
     )
+    callback_data = keyboard.inline_keyboard[0][0].callback_data
 
     query = SimpleNamespace(
-        data="model:subagent:0",
+        data=callback_data,
         message=SimpleNamespace(chat_id=123),
         from_user=SimpleNamespace(id=12345, username="alice"),
         answer=AsyncMock(),
@@ -774,3 +779,102 @@ async def test_model_callback_preserves_subagent_action() -> None:
         content="/model subagent provider/model-a",
     )
     query.edit_message_text.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_model_callback_works_without_cached_picker_state() -> None:
+    channel = TelegramChannel(
+        TelegramConfig(enabled=True, token="123:abc", allow_from=["*"]), MessageBus()
+    )
+    channel._handle_message = AsyncMock()
+    keyboard = channel._build_model_keyboard(
+        chat_id="123",
+        model_list=["provider/model-a"],
+        action_prefix="set",
+        page=0,
+        current_model="provider/model-a",
+    )
+    callback_data = keyboard.inline_keyboard[0][0].callback_data
+
+    channel._model_picker_state.clear()
+
+    query = SimpleNamespace(
+        data=callback_data,
+        message=SimpleNamespace(chat_id=123),
+        from_user=SimpleNamespace(id=12345, username="alice"),
+        answer=AsyncMock(),
+        edit_message_text=AsyncMock(),
+    )
+    update = SimpleNamespace(callback_query=query)
+
+    await channel._on_model_callback(update, None)
+
+    channel._handle_message.assert_awaited_once_with(
+        sender_id="12345|alice",
+        chat_id="123",
+        content="/model provider/model-a",
+    )
+    query.edit_message_text.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_model_callback_old_button_survives_new_picker_render() -> None:
+    channel = TelegramChannel(
+        TelegramConfig(enabled=True, token="123:abc", allow_from=["*"]), MessageBus()
+    )
+    channel._handle_message = AsyncMock()
+    first_keyboard = channel._build_model_keyboard(
+        chat_id="123",
+        model_list=["provider/model-a"],
+        action_prefix="set",
+        page=0,
+        current_model="provider/model-a",
+    )
+    old_callback_data = first_keyboard.inline_keyboard[0][0].callback_data
+
+    channel._build_model_keyboard(
+        chat_id="123",
+        model_list=["provider/model-b"],
+        action_prefix="set",
+        page=0,
+        current_model="provider/model-b",
+    )
+
+    query = SimpleNamespace(
+        data=old_callback_data,
+        message=SimpleNamespace(chat_id=123),
+        from_user=SimpleNamespace(id=12345, username="alice"),
+        answer=AsyncMock(),
+        edit_message_text=AsyncMock(),
+    )
+    update = SimpleNamespace(callback_query=query)
+
+    await channel._on_model_callback(update, None)
+
+    channel._handle_message.assert_awaited_once_with(
+        sender_id="12345|alice",
+        chat_id="123",
+        content="/model provider/model-a",
+    )
+
+
+@pytest.mark.asyncio
+async def test_forward_mission_command_does_not_inject_reply_context() -> None:
+    channel = TelegramChannel(
+        TelegramConfig(enabled=True, token="123:abc", allow_from=["*"], group_policy="open"),
+        MessageBus(),
+    )
+    channel._app = _FakeApp(lambda: None)
+    handled = []
+
+    async def capture_handle(**kwargs) -> None:
+        handled.append(kwargs)
+
+    channel._handle_message = capture_handle
+
+    reply = SimpleNamespace(text="some old message", message_id=2, from_user=SimpleNamespace(id=1))
+    update = _make_telegram_update(text="/mission build x", reply_to_message=reply)
+    await channel._forward_command(update, None)
+
+    assert len(handled) == 1
+    assert handled[0]["content"] == "/mission build x"

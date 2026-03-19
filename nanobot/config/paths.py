@@ -13,6 +13,11 @@ def get_data_dir() -> Path:
     return ensure_dir(get_config_path().parent)
 
 
+def get_global_runtime_dir() -> Path:
+    """Return the shared global runtime directory."""
+    return ensure_dir(Path.home() / ".nanobot")
+
+
 def get_runtime_subdir(name: str) -> Path:
     """Return a named runtime subdirectory under the instance data dir."""
     return ensure_dir(get_data_dir() / name)
@@ -34,6 +39,11 @@ def get_logs_dir() -> Path:
     return get_runtime_subdir("logs")
 
 
+def get_missions_dir() -> Path:
+    """Return the shared mission storage directory."""
+    return ensure_dir(get_global_runtime_dir() / "missions")
+
+
 def get_workspace_path(workspace: str | None = None) -> Path:
     """Resolve and ensure the agent workspace path."""
     path = Path(workspace).expanduser() if workspace else Path.home() / ".nanobot" / "workspace"
@@ -42,14 +52,9 @@ def get_workspace_path(workspace: str | None = None) -> Path:
 
 def get_cli_history_path() -> Path:
     """Return the shared CLI history file path."""
-    return Path.home() / ".nanobot" / "history" / "cli_history"
+    return get_global_runtime_dir() / "history" / "cli_history"
 
 
 def get_bridge_install_dir() -> Path:
     """Return the shared WhatsApp bridge installation directory."""
-    return Path.home() / ".nanobot" / "bridge"
-
-
-def get_legacy_sessions_dir() -> Path:
-    """Return the legacy global session directory used for migration fallback."""
-    return Path.home() / ".nanobot" / "sessions"
+    return get_global_runtime_dir() / "bridge"

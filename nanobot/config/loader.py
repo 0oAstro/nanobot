@@ -1,6 +1,7 @@
 """Configuration loading utilities."""
 
 import json
+import os
 from pathlib import Path
 
 from nanobot.config.schema import Config
@@ -40,12 +41,16 @@ def load_config(config_path: Path | None = None) -> Config:
             with open(path, encoding="utf-8") as f:
                 data = json.load(f)
             data = _migrate_config(data)
-            return Config.model_validate(data)
+            config = Config.model_validate(data)
+            _apply_environment(config.environment)
+            return config
         except (json.JSONDecodeError, ValueError) as e:
             print(f"Warning: Failed to load config from {path}: {e}")
             print("Using default configuration.")
 
-    return Config()
+    config = Config()
+    _apply_environment(config.environment)
+    return config
 
 
 def save_config(config: Config, config_path: Path | None = None) -> None:
@@ -73,3 +78,10 @@ def _migrate_config(data: dict) -> dict:
     if "restrictToWorkspace" in exec_cfg and "restrictToWorkspace" not in tools:
         tools["restrictToWorkspace"] = exec_cfg.pop("restrictToWorkspace")
     return data
+
+
+def _apply_environment(env: dict[str, str]) -> None:
+    """Apply configured runtime environment variables to the current process."""
+    for key, raw_value in env.items():
+        value = os.path.expanduser(os.path.expandvars(str(raw_value)))
+        os.environ[str(key)] = value

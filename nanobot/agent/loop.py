@@ -18,17 +18,24 @@ from nanobot.agent.memory import MemoryConsolidator
 from nanobot.agent.subagent import SubagentManager
 from nanobot.agent.tools.cron import CronTool
 from nanobot.agent.skills import BUILTIN_SKILLS_DIR
+from nanobot.mission.manager import MissionManager
 from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from nanobot.agent.tools.read_image import ReadImageTool
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.shell import ExecTool
-from nanobot.agent.tools.spawn import SpawnTool
+from nanobot.agent.tools.subagent_control import (
+    CancelSubagentTool,
+    GetSubagentStatusTool,
+    SpawnSubagentTool,
+    WaitForSubagentsTool,
+)
 from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.config.loader import load_config, save_config
 from nanobot.providers.base import LLMProvider
+from nanobot.runs import RunManager
 from nanobot.runtime import make_provider, resolve_subagent_model
 from nanobot.session.manager import Session, SessionManager
 
@@ -59,6 +66,7 @@ class AgentLoop:
         subagent_provider: LLMProvider | None = None,
         subagent_model: str | None = None,
         max_iterations: int = 40,
+        subagent_max_iterations: int | None = None,
         context_window_tokens: int = 65_536,
         web_search_config: WebSearchConfig | None = None,
         web_proxy: str | None = None,
@@ -78,6 +86,7 @@ class AgentLoop:
         self.model = model or provider.get_default_model()
         self.subagent_model = subagent_model or self.model
         self.max_iterations = max_iterations
+        self.subagent_max_iterations = subagent_max_iterations or max_iterations
         self.context_window_tokens = context_window_tokens
         self.web_search_config = web_search_config or WebSearchConfig()
         self.web_proxy = web_proxy
@@ -87,6 +96,7 @@ class AgentLoop:
 
         self.context = ContextBuilder(workspace)
         self.sessions = session_manager or SessionManager(workspace)
+        self.runs = RunManager(workspace)
         self.tools = ToolRegistry()
         self.subagents = SubagentManager(
             provider=subagent_provider or provider,
@@ -97,6 +107,8 @@ class AgentLoop:
             web_proxy=web_proxy,
             exec_config=self.exec_config,
             restrict_to_workspace=restrict_to_workspace,
+            runs=self.runs,
+            max_iterations=self.subagent_max_iterations,
         )
 
         self._running = False
@@ -115,6 +127,12 @@ class AgentLoop:
             context_window_tokens=context_window_tokens,
             build_messages=self.context.build_messages,
             get_tool_definitions=self.tools.get_definitions,
+        )
+        self.missions = MissionManager(
+            provider=provider,
+            model=self.model,
+            runs=self.runs,
+            subagents=self.subagents,
         )
         self._register_default_tools()
 
@@ -157,10 +175,16 @@ class AgentLoop:
         self.subagents.web_proxy = self.web_proxy
         self.subagents.exec_config = self.exec_config
         self.subagents.restrict_to_workspace = self.restrict_to_workspace
+        self.subagents.max_iterations = cfg.agents.defaults.subagent_max_tool_iterations
+        self.subagent_max_iterations = cfg.agents.defaults.subagent_max_tool_iterations
 
         self.memory_consolidator.provider = main_provider
         self.memory_consolidator.model = main_model
         self.memory_consolidator.context_window_tokens = cfg.agents.defaults.context_window_tokens
+        self.missions.provider = main_provider
+        self.missions.model = main_model
+        self.missions.runs = self.runs
+        self.missions.subagents = self.subagents
 
         self.tools = ToolRegistry()
         self._register_default_tools()
@@ -184,7 +208,10 @@ class AgentLoop:
         self.tools.register(WebSearchTool(config=self.web_search_config, proxy=self.web_proxy))
         self.tools.register(WebFetchTool(proxy=self.web_proxy))
         self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
-        self.tools.register(SpawnTool(manager=self.subagents))
+        self.tools.register(SpawnSubagentTool(manager=self.subagents))
+        self.tools.register(WaitForSubagentsTool(self.runs))
+        self.tools.register(GetSubagentStatusTool(self.runs))
+        self.tools.register(CancelSubagentTool(self.subagents))
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
 
@@ -210,12 +237,31 @@ class AgentLoop:
         finally:
             self._mcp_connecting = False
 
-    def _set_tool_context(self, channel: str, chat_id: str, message_id: str | None = None) -> None:
+    def _set_tool_context(
+        self,
+        channel: str,
+        chat_id: str,
+        message_id: str | None = None,
+        parent_run_id: str | None = None,
+    ) -> None:
         """Update context for all tools that need routing info."""
-        for name in ("message", "spawn", "cron"):
+        for name in (
+            "message",
+            "spawn_subagent",
+            "wait_for_subagents",
+            "get_subagent_status",
+            "cron",
+        ):
             if tool := self.tools.get(name):
                 if hasattr(tool, "set_context"):
-                    tool.set_context(channel, chat_id, *([message_id] if name == "message" else []))
+                    if name == "message":
+                        tool.set_context(channel, chat_id, *([message_id] if message_id else []))
+                    elif name == "spawn_subagent":
+                        tool.set_context(channel, chat_id, parent_run_id)
+                    elif name in {"wait_for_subagents", "get_subagent_status"}:
+                        tool.set_context(parent_run_id)
+                    else:
+                        tool.set_context(channel, chat_id)
 
     @staticmethod
     def _strip_think(text: str | None) -> str | None:
@@ -223,6 +269,44 @@ class AgentLoop:
         if not text:
             return None
         return re.sub(r"<think>[\s\S]*?</think>", "", text).strip() or None
+
+    def _provider_debug_meta(self) -> dict[str, Any]:
+        """Capture lightweight provider metadata for empty-response triage."""
+        meta: dict[str, Any] = {
+            "provider_type": type(self.provider).__name__,
+            "model": self.model,
+        }
+        default_headers = getattr(getattr(self.provider, "_client", None), "default_headers", None)
+        if isinstance(default_headers, dict):
+            affinity = default_headers.get("x-session-affinity")
+            if affinity:
+                meta["session_affinity"] = affinity
+        return meta
+
+    @staticmethod
+    def _recent_message_trace(messages: list[dict], limit: int = 6) -> list[dict[str, Any]]:
+        """Summarize the tail of the message list without dumping full content."""
+        trace: list[dict[str, Any]] = []
+        for msg in messages[-limit:]:
+            content = msg.get("content")
+            if isinstance(content, str):
+                content_preview = content[:160]
+            elif isinstance(content, list):
+                content_preview = f"<list:{len(content)}>"
+            elif content is None:
+                content_preview = None
+            else:
+                content_preview = f"<{type(content).__name__}>"
+            trace.append(
+                {
+                    "role": msg.get("role"),
+                    "has_tool_calls": bool(msg.get("tool_calls")),
+                    "tool_call_id": msg.get("tool_call_id"),
+                    "name": msg.get("name"),
+                    "content_preview": content_preview,
+                }
+            )
+        return trace
 
     @staticmethod
     def _tool_hint(tool_calls: list) -> str:
@@ -239,12 +323,14 @@ class AgentLoop:
         self,
         initial_messages: list[dict],
         on_progress: Callable[..., Awaitable[None]] | None = None,
-    ) -> tuple[str | None, list[str], list[dict]]:
+        parent_run_id: str | None = None,
+    ) -> tuple[str | None, list[str], list[dict], dict[str, Any] | None]:
         """Run the agent iteration loop."""
         messages = initial_messages
         iteration = 0
         final_content = None
         tools_used: list[str] = []
+        suspend: dict[str, Any] | None = None
 
         while iteration < self.max_iterations:
             iteration += 1
@@ -281,9 +367,26 @@ class AgentLoop:
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
                     result = await self.tools.execute(tool_call.name, tool_call.arguments)
+                    if tool_call.name == "wait_for_subagents" and parent_run_id:
+                        wait_request = self.runs.pop_wait_request(parent_run_id)
+                        if wait_request is not None:
+                            messages = self.context.add_tool_result(
+                                messages, tool_call.id, tool_call.name, result
+                            )
+                            suspend = {
+                                "type": "wait_for_subagents",
+                                "request": {
+                                    "run_ids": wait_request.run_ids,
+                                    "mode": wait_request.mode,
+                                },
+                            }
+                            final_content = None
+                            break
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
+                if suspend is not None:
+                    break
             else:
                 clean = self._strip_think(response.content)
                 # Don't persist error responses to session history — they can
@@ -292,6 +395,19 @@ class AgentLoop:
                     logger.error("LLM returned error: {}", (clean or "")[:200])
                     final_content = clean or "Sorry, I encountered an error calling the AI model."
                     break
+                if clean is None:
+                    logger.error(
+                        "LLM returned empty final content without tool calls: finish_reason={} content_type={} raw_content={!r} "
+                        "reasoning_present={} thinking_blocks={} tools_used={} provider_meta={} recent_messages={}",
+                        response.finish_reason,
+                        type(response.content).__name__ if response.content is not None else None,
+                        response.content,
+                        bool(response.reasoning_content),
+                        len(response.thinking_blocks or []),
+                        tools_used,
+                        self._provider_debug_meta(),
+                        self._recent_message_trace(messages),
+                    )
                 messages = self.context.add_assistant_message(
                     messages, clean, reasoning_content=response.reasoning_content,
                     thinking_blocks=response.thinking_blocks,
@@ -306,7 +422,7 @@ class AgentLoop:
                 "without completing the task. You can try breaking the task into smaller steps."
             )
 
-        return final_content, tools_used, messages
+        return final_content, tools_used, messages, suspend
 
     async def run(self) -> None:
         """Run the agent loop, dispatching messages as tasks to stay responsive to /stop."""
@@ -370,7 +486,7 @@ class AgentLoop:
                 response = await self._process_message(msg)
                 if response is not None:
                     await self.bus.publish_outbound(response)
-                elif msg.channel == "cli":
+                elif msg.channel == "cli" and not msg.metadata.get("_suspended"):
                     await self.bus.publish_outbound(OutboundMessage(
                         channel=msg.channel, chat_id=msg.chat_id,
                         content="", metadata=msg.metadata or {},
@@ -417,6 +533,12 @@ class AgentLoop:
         """Process a single inbound message and return the response."""
         # System messages: parse origin from chat_id ("channel:chat_id")
         if msg.channel == "system":
+            if parent_run_id := msg.metadata.get("resume_parent_run_id"):
+                return await self._resume_parent_run(
+                    parent_run_id=str(parent_run_id),
+                    channel_hint=msg.chat_id.split(":", 1)[0] if ":" in msg.chat_id else "cli",
+                    chat_id_hint=msg.chat_id.split(":", 1)[1] if ":" in msg.chat_id else msg.chat_id,
+                )
             channel, chat_id = (msg.chat_id.split(":", 1) if ":" in msg.chat_id
                                 else ("cli", msg.chat_id))
             logger.info("Processing system message from {}", msg.sender_id)
@@ -429,7 +551,7 @@ class AgentLoop:
                 history=history,
                 current_message=msg.content, channel=channel, chat_id=chat_id,
             )
-            final_content, _, all_msgs = await self._run_agent_loop(messages)
+            final_content, _, all_msgs, _ = await self._run_agent_loop(messages)
             self._save_turn(session, all_msgs, 1 + len(history))
             self.sessions.save(session)
             self._schedule_background(self.memory_consolidator.maybe_consolidate_by_tokens(session))
@@ -461,6 +583,7 @@ class AgentLoop:
             lines = [
                 "🐈 nanobot commands:",
                 "/new — Start a new conversation",
+                "/mission — Plan, approve, run, pause, or inspect a structured mission",
                 "/model — Pick or set main/subagent model",
                 "/reload — Reload config/runtime in-process",
                 "/stop — Stop the current task",
@@ -469,6 +592,72 @@ class AgentLoop:
             ]
             return OutboundMessage(
                 channel=msg.channel, chat_id=msg.chat_id, content="\n".join(lines),
+            )
+        if cmd_base == "/mission":
+            mission_scope = key
+            thread_id = msg.metadata.get("message_thread_id")
+            parts = raw.split(maxsplit=1)
+            if len(parts) == 1 or not parts[1].strip():
+                active = self.missions.get_active_mission(mission_scope)
+                content = (
+                    self.missions.format_summary(active)
+                    if active
+                    else self.missions.mission_help_text()
+                )
+                return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=content)
+            arg = parts[1].strip()
+            action = arg.lower()
+            if action == "inspect":
+                active = self.missions.get_active_mission(mission_scope)
+                content = (
+                    self.missions.format_summary(active)
+                    if active
+                    else self.missions.mission_help_text()
+                )
+                return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=content)
+            if action == "approve":
+                mission = await self.missions.approve(mission_scope)
+                if mission and self.missions.runs and self.missions.subagents:
+                    mission = await self.missions.start_or_resume_execution(mission_scope)
+                content = (
+                    self.missions.format_summary(mission)
+                    if mission
+                    else self.missions.mission_help_text()
+                )
+                return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=content)
+            if action in {"start", "resume"}:
+                try:
+                    mission = await self.missions.start_or_resume_execution(mission_scope)
+                except ValueError as exc:
+                    return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=str(exc))
+                content = (
+                    self.missions.format_summary(mission)
+                    if mission
+                    else self.missions.mission_help_text()
+                )
+                return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=content)
+            if action == "pause":
+                mission = await self.missions.pause(mission_scope)
+                content = (
+                    self.missions.format_summary(mission)
+                    if mission
+                    else self.missions.mission_help_text()
+                )
+                return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=content)
+
+            mission = await self.missions.start_or_update(
+                scope_key=mission_scope,
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                message_thread_id=thread_id if isinstance(thread_id, int) else None,
+                workspace=self.workspace,
+                goal=arg,
+                sender_id=msg.sender_id,
+            )
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=self.missions.format_summary(mission),
             )
         if cmd_base == "/reload":
             try:
@@ -523,9 +712,23 @@ class AgentLoop:
                         f"Subagent model: {subagent_model}"
                     ),
                 )
-            all_models = sorted(mid for mid, _ in await self.provider.list_models())
-            explicit_subagent = load_config().agents.defaults.subagent_model
+            cfg = load_config()
+            provider_name = cfg.get_provider_name(self.model)
+            provider_cfg = cfg.get_provider(self.model)
+            configured_models = sorted({str(mid) for mid in getattr(provider_cfg, "models", []) if str(mid).strip()})
+            all_models = configured_models or sorted(mid for mid, _ in await self.provider.list_models())
+            explicit_subagent = cfg.agents.defaults.subagent_model
             subagent_display = explicit_subagent or f"{self.model} (follows main)"
+            logger.debug(
+                "/model picker state: provider={} provider_name={} model={} subagent={} configured_models_count={} listed_models_count={} listed_models_sample={}",
+                type(self.provider).__name__,
+                provider_name,
+                self.model,
+                explicit_subagent,
+                len(configured_models),
+                len(all_models),
+                all_models[:5],
+            )
             content = f"Main: {self.model}\nSubagent: {subagent_display}"
             return OutboundMessage(
                 channel=msg.channel, chat_id=msg.chat_id,
@@ -539,18 +742,45 @@ class AgentLoop:
             )
         await self.memory_consolidator.maybe_consolidate_by_tokens(session)
 
-        self._set_tool_context(msg.channel, msg.chat_id, msg.metadata.get("message_id"))
+        parent_run = None
+        if msg.metadata.get("parent_run_id"):
+            parent_run = self.runs.load(str(msg.metadata["parent_run_id"]))
+        if parent_run:
+            self._set_tool_context(
+                msg.channel,
+                msg.chat_id,
+                msg.metadata.get("message_id"),
+                parent_run.run_id,
+            )
+        else:
+            self._set_tool_context(msg.channel, msg.chat_id, msg.metadata.get("message_id"))
         if message_tool := self.tools.get("message"):
             if isinstance(message_tool, MessageTool):
                 message_tool.start_turn()
 
         history = session.get_history(max_messages=0)
-        initial_messages = self.context.build_messages(
-            history=history,
-            current_message=msg.content,
-            media=msg.media if msg.media else None,
-            channel=msg.channel, chat_id=msg.chat_id,
-        )
+        if parent_run and parent_run.pending_messages:
+            initial_messages = list(parent_run.pending_messages)
+            if msg.metadata.get("parent_run_id"):
+                initial_messages.append({"role": "user", "content": msg.content})
+        else:
+            initial_messages = self.context.build_messages(
+                history=history,
+                current_message=msg.content,
+                media=msg.media if msg.media else None,
+                channel=msg.channel, chat_id=msg.chat_id,
+            )
+            parent_run = self.runs.create_parent_run(
+                session_key=key,
+                goal=msg.content,
+                messages=initial_messages,
+            )
+            self._set_tool_context(
+                msg.channel,
+                msg.chat_id,
+                msg.metadata.get("message_id"),
+                parent_run.run_id,
+            )
 
         async def _bus_progress(content: str, *, tool_hint: bool = False) -> None:
             meta = dict(msg.metadata or {})
@@ -560,14 +790,36 @@ class AgentLoop:
                 channel=msg.channel, chat_id=msg.chat_id, content=content, metadata=meta,
             ))
 
-        final_content, _, all_msgs = await self._run_agent_loop(
-            initial_messages, on_progress=on_progress or _bus_progress,
+        final_content, _, all_msgs, suspend = await self._run_agent_loop(
+            initial_messages,
+            on_progress=on_progress or _bus_progress,
+            parent_run_id=parent_run.run_id if parent_run else None,
         )
 
+        if suspend and parent_run:
+            msg.metadata["_suspended"] = True
+            self.runs.mark_waiting(
+                parent_run.run_id,
+                all_msgs,
+                suspend["request"].get("run_ids") or parent_run.waiting_on,
+            )
+            return None
+
+        persist_turn = final_content is not None
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
 
-        self._save_turn(session, all_msgs, 1 + len(history))
+        if persist_turn:
+            self._save_turn(session, all_msgs, 1 + len(history))
+            if parent_run:
+                self.runs.set_pending_messages(parent_run.run_id, [])
+                self.runs.set_status(parent_run.run_id, "completed")
+        else:
+            logger.warning(
+                "Skipping session persistence for incomplete turn on {}:{}",
+                msg.channel,
+                msg.chat_id,
+            )
         self.sessions.save(session)
         self._schedule_background(self.memory_consolidator.maybe_consolidate_by_tokens(session))
 
@@ -580,6 +832,43 @@ class AgentLoop:
             channel=msg.channel, chat_id=msg.chat_id, content=final_content,
             metadata=msg.metadata or {},
         )
+
+    async def _resume_parent_run(
+        self,
+        *,
+        parent_run_id: str,
+        channel_hint: str,
+        chat_id_hint: str,
+    ) -> OutboundMessage | None:
+        if self.missions.owns_run(parent_run_id):
+            mission = await self.missions.resume_parent_run(parent_run_id)
+            if mission is None:
+                return None
+            return OutboundMessage(
+                channel=channel_hint,
+                chat_id=chat_id_hint,
+                content=self.missions.format_summary(mission),
+            )
+        parent = self.runs.load(parent_run_id)
+        if not parent:
+            return None
+        events = self.runs.clear_events(parent_run_id)
+        self.runs.set_wake_queued(parent_run_id, False)
+        if not events:
+            return None
+        resume_content = (
+            "[Subagent handoff batch]\n\n"
+            f"Completed children: {len(events)}\n"
+            f"{json.dumps(events, ensure_ascii=False, indent=2)}"
+        )
+        msg = InboundMessage(
+            channel=channel_hint,
+            sender_id="system",
+            chat_id=chat_id_hint,
+            content=resume_content,
+            metadata={"parent_run_id": parent_run_id},
+        )
+        return await self._process_message(msg, session_key=parent.session_key)
 
     def _save_turn(self, session: Session, messages: list[dict], skip: int) -> None:
         """Save new-turn messages into session, truncating large tool results."""

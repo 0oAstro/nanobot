@@ -1,7 +1,6 @@
 """Session management for conversation history."""
 
 import json
-import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -9,7 +8,6 @@ from typing import Any
 
 from loguru import logger
 
-from nanobot.config.paths import get_legacy_sessions_dir
 from nanobot.utils.helpers import ensure_dir, safe_filename
 
 
@@ -61,6 +59,19 @@ class Session:
                                     declared.add(str(tc["id"]))
         return start
 
+    @staticmethod
+    def _find_complete_end(messages: list[dict[str, Any]]) -> int:
+        """Trim trailing turns that never reached a final assistant reply."""
+        for i in range(len(messages) - 1, -1, -1):
+            msg = messages[i]
+            if (
+                msg.get("role") == "assistant"
+                and msg.get("content")
+                and not msg.get("tool_calls")
+            ):
+                return i + 1
+        return 0
+
     def get_history(self, max_messages: int = 500) -> list[dict[str, Any]]:
         """Return unconsolidated messages for LLM input, aligned to a legal tool-call boundary."""
         unconsolidated = self.messages[self.last_consolidated :]
@@ -77,6 +88,19 @@ class Session:
         start = self._find_legal_start(sliced)
         if start:
             sliced = sliced[start:]
+
+        end = self._find_complete_end(sliced)
+        if end:
+            sliced = sliced[:end]
+        elif any(
+            message.get("role") == "tool"
+            or (
+                message.get("role") == "assistant"
+                and message.get("tool_calls")
+            )
+            for message in sliced
+        ):
+            sliced = []
 
         out: list[dict[str, Any]] = []
         for message in sliced:
@@ -104,18 +128,12 @@ class SessionManager:
     def __init__(self, workspace: Path):
         self.workspace = workspace
         self.sessions_dir = ensure_dir(self.workspace / "sessions")
-        self.legacy_sessions_dir = get_legacy_sessions_dir()
         self._cache: dict[str, Session] = {}
 
     def _get_session_path(self, key: str) -> Path:
         """Get the file path for a session."""
         safe_key = safe_filename(key.replace(":", "_"))
         return self.sessions_dir / f"{safe_key}.jsonl"
-
-    def _get_legacy_session_path(self, key: str) -> Path:
-        """Legacy global session path (~/.nanobot/sessions/)."""
-        safe_key = safe_filename(key.replace(":", "_"))
-        return self.legacy_sessions_dir / f"{safe_key}.jsonl"
 
     def get_or_create(self, key: str) -> Session:
         """
@@ -140,15 +158,6 @@ class SessionManager:
     def _load(self, key: str) -> Session | None:
         """Load a session from disk."""
         path = self._get_session_path(key)
-        if not path.exists():
-            legacy_path = self._get_legacy_session_path(key)
-            if legacy_path.exists():
-                try:
-                    shutil.move(str(legacy_path), str(path))
-                    logger.info("Migrated session {} from legacy path", key)
-                except Exception:
-                    logger.exception("Failed to migrate session {}", key)
-
         if not path.exists():
             return None
 

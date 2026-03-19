@@ -7,6 +7,7 @@ from typing import Any
 
 import json_repair
 from openai import AsyncOpenAI
+from loguru import logger
 
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 
@@ -67,9 +68,22 @@ class CustomProvider(LLMProvider):
                             arguments=json_repair.loads(tc.function.arguments) if isinstance(tc.function.arguments, str) else tc.function.arguments)
             for tc in (msg.tool_calls or [])
         ]
+        finish_reason = choice.finish_reason or "stop"
+        if msg.content == "" and not tool_calls and finish_reason != "error":
+            try:
+                raw_response = response.model_dump(mode="json")
+            except Exception:
+                raw_response = str(response)
+            logger.error(
+                "CustomProvider received empty terminal response: model={} finish_reason={} affinity={} raw_response={}",
+                getattr(response, "model", self.default_model),
+                finish_reason,
+                getattr(self._client, "default_headers", {}).get("x-session-affinity"),
+                raw_response,
+            )
         u = response.usage
         return LLMResponse(
-            content=msg.content, tool_calls=tool_calls, finish_reason=choice.finish_reason or "stop",
+            content=msg.content, tool_calls=tool_calls, finish_reason=finish_reason,
             usage={"prompt_tokens": u.prompt_tokens, "completion_tokens": u.completion_tokens, "total_tokens": u.total_tokens} if u else {},
             reasoning_content=getattr(msg, "reasoning_content", None) or None,
         )

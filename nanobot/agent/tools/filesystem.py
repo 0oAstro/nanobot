@@ -12,6 +12,7 @@ def _resolve_path(
     workspace: Path | None = None,
     allowed_dir: Path | None = None,
     extra_allowed_dirs: list[Path] | None = None,
+    blocked_paths: list[Path] | None = None,
 ) -> Path:
     """Resolve path against workspace (if relative) and enforce directory restriction."""
     p = Path(path).expanduser()
@@ -22,6 +23,11 @@ def _resolve_path(
         all_dirs = [allowed_dir] + (extra_allowed_dirs or [])
         if not any(_is_under(resolved, d) for d in all_dirs):
             raise PermissionError(f"Path {path} is outside allowed directory {allowed_dir}")
+    if blocked_paths:
+        for blocked in blocked_paths:
+            blocked_resolved = blocked.resolve()
+            if resolved == blocked_resolved or _is_under(resolved, blocked_resolved):
+                raise PermissionError(f"Path {path} is protected and cannot be modified")
     return resolved
 
 
@@ -41,13 +47,21 @@ class _FsTool(Tool):
         workspace: Path | None = None,
         allowed_dir: Path | None = None,
         extra_allowed_dirs: list[Path] | None = None,
+        blocked_paths: list[Path] | None = None,
     ):
         self._workspace = workspace
         self._allowed_dir = allowed_dir
         self._extra_allowed_dirs = extra_allowed_dirs
+        self._blocked_paths = blocked_paths
 
     def _resolve(self, path: str) -> Path:
-        return _resolve_path(path, self._workspace, self._allowed_dir, self._extra_allowed_dirs)
+        return _resolve_path(
+            path,
+            self._workspace,
+            self._allowed_dir,
+            self._extra_allowed_dirs,
+            self._blocked_paths,
+        )
 
 
 # ---------------------------------------------------------------------------

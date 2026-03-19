@@ -83,6 +83,27 @@ async def test_model_status_shows_main_and_following_subagent(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_model_status_prefers_configured_provider_catalog(tmp_path):
+    loop, provider, _subagents = _make_loop(tmp_path)
+    config = Config()
+    config.agents.defaults.model = "main-model"
+    config.agents.defaults.provider = "anthropic"
+    config.providers.anthropic.models = ["claude-sonnet-4-6", "claude-haiku-4-5-20251001"]
+
+    with patch("nanobot.agent.loop.load_config", return_value=config):
+        response = await loop._process_message(
+            InboundMessage(channel="telegram", sender_id="u1", chat_id="123", content="/model")
+        )
+
+    assert response is not None
+    assert response.metadata["_model_list"] == [
+        "claude-haiku-4-5-20251001",
+        "claude-sonnet-4-6",
+    ]
+    provider.list_models.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_model_subagent_command_persists_explicit_subagent_model(tmp_path):
     loop, _provider, _subagents = _make_loop(tmp_path)
     config = Config()
@@ -194,3 +215,176 @@ async def test_new_command_accepts_telegram_command_suffix(tmp_path):
     loop.sessions.invalidate.assert_called_once()
     assert response is not None
     assert response.content == "New session started."
+
+
+@pytest.mark.asyncio
+async def test_mission_help_command_accepts_telegram_command_suffix(tmp_path):
+    loop, _provider, _subagents = _make_loop(tmp_path)
+    loop.missions = MagicMock()
+    loop.missions.get_active_mission.return_value = None
+    loop.missions.mission_help_text.return_value = "mission help"
+
+    response = await loop._process_message(
+        InboundMessage(
+            channel="telegram", sender_id="u1", chat_id="123", content="/mission@nanobot_test"
+        )
+    )
+
+    assert response is not None
+    assert response.content == "mission help"
+
+
+@pytest.mark.asyncio
+async def test_mission_command_starts_new_mission(tmp_path):
+    loop, _provider, _subagents = _make_loop(tmp_path)
+    loop.missions = MagicMock()
+    mission = MagicMock()
+    loop.missions.start_or_update = AsyncMock(return_value=mission)
+    loop.missions.format_summary.return_value = "Mission: Test"
+
+    response = await loop._process_message(
+        InboundMessage(
+            channel="telegram",
+            sender_id="u1",
+            chat_id="123",
+            content="/mission build a mission layer",
+        )
+    )
+
+    loop.missions.start_or_update.assert_awaited_once_with(
+        scope_key="telegram:123",
+        channel="telegram",
+        chat_id="123",
+        message_thread_id=None,
+        workspace=tmp_path,
+        goal="build a mission layer",
+        sender_id="u1",
+    )
+    assert response is not None
+    assert response.content == "Mission: Test"
+
+
+@pytest.mark.asyncio
+async def test_mission_command_approve_calls_mission_manager(tmp_path):
+    loop, _provider, _subagents = _make_loop(tmp_path)
+    loop.missions = MagicMock()
+    mission = MagicMock()
+    loop.missions.approve = AsyncMock(return_value=mission)
+    loop.missions.runs = MagicMock()
+    loop.missions.subagents = MagicMock()
+    loop.missions.start_or_resume_execution = AsyncMock(return_value=mission)
+    loop.missions.format_summary.return_value = "Mission: Approved"
+
+    response = await loop._process_message(
+        InboundMessage(
+            channel="telegram",
+            sender_id="u1",
+            chat_id="123",
+            content="/mission approve",
+        )
+    )
+
+    loop.missions.approve.assert_awaited_once_with("telegram:123")
+    loop.missions.start_or_resume_execution.assert_awaited_once_with("telegram:123")
+    assert response is not None
+    assert response.content == "Mission: Approved"
+
+
+@pytest.mark.asyncio
+async def test_mission_command_start_returns_approval_error(tmp_path):
+    loop, _provider, _subagents = _make_loop(tmp_path)
+    loop.missions = MagicMock()
+    loop.missions.start_or_resume_execution = AsyncMock(
+        side_effect=ValueError("Mission approval is required before execution can start.")
+    )
+
+    response = await loop._process_message(
+        InboundMessage(
+            channel="telegram",
+            sender_id="u1",
+            chat_id="123",
+            content="/mission start",
+        )
+    )
+
+    loop.missions.start_or_resume_execution.assert_awaited_once_with("telegram:123")
+    assert response is not None
+    assert "approval is required" in response.content.lower()
+
+
+@pytest.mark.asyncio
+async def test_active_mission_plain_approved_stays_in_normal_chat(tmp_path):
+    loop, _provider, _subagents = _make_loop(tmp_path)
+    loop.missions = MagicMock()
+    mission = MagicMock()
+    mission.status = "planning"
+    mission.approval_required = True
+    loop.missions.get_active_mission.return_value = mission
+    loop._run_agent_loop = AsyncMock(return_value=("normal reply", None, [], None))
+    loop.context.build_messages.return_value = [{"role": "user", "content": "approved"}]
+
+    response = await loop._process_message(
+        InboundMessage(
+            channel="telegram",
+            sender_id="u1",
+            chat_id="123",
+            content="approved",
+        )
+    )
+
+    loop.missions.approve.assert_not_called()
+    assert response is not None
+    assert response.content == "normal reply"
+
+
+@pytest.mark.asyncio
+async def test_active_mission_allows_freeform_chat_to_use_main_loop(tmp_path):
+    loop, _provider, _subagents = _make_loop(tmp_path)
+    loop.missions = MagicMock()
+    mission = MagicMock()
+    mission.status = "planning"
+    mission.approval_required = True
+    loop.missions.get_active_mission.return_value = mission
+    loop._run_agent_loop = AsyncMock(return_value=("main loop reply", None, [], None))
+    loop.context.build_messages.return_value = [{"role": "user", "content": "do it now"}]
+
+    response = await loop._process_message(
+        InboundMessage(
+            channel="telegram",
+            sender_id="u1",
+            chat_id="123",
+            content="do it now",
+        )
+    )
+
+    loop._run_agent_loop.assert_awaited_once()
+    assert response is not None
+    assert response.content == "main loop reply"
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_session_does_not_inherit_target_chat_mission_lock(tmp_path):
+    loop, _provider, _subagents = _make_loop(tmp_path)
+    loop.missions = MagicMock()
+
+    mission = MagicMock()
+    mission.status = "planning"
+    mission.approval_required = True
+
+    def _get_active(scope_key: str):
+        return mission if scope_key == "telegram:123" else None
+
+    loop.missions.get_active_mission.side_effect = _get_active
+    loop.context.build_messages.return_value = [{"role": "user", "content": "heartbeat task"}]
+    loop._run_agent_loop = AsyncMock(return_value=("heartbeat ok", None, [], None))
+
+    response = await loop.process_direct(
+        "heartbeat task",
+        session_key="heartbeat",
+        channel="telegram",
+        chat_id="123",
+    )
+
+    assert response == "heartbeat ok"
+    loop._run_agent_loop.assert_awaited_once()
+    loop.missions.get_active_mission.assert_not_called()
